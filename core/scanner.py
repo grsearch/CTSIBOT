@@ -1,23 +1,29 @@
 """
 多币种扫描器
-- single  : 只监控 config.SYMBOL
-- list    : 监控 config.SYMBOL_LIST
-- auto    : 从24h行情自动筛选活跃插针候选币
+- single : 只监控 config.SYMBOL
+- list   : 监控 config.SYMBOL_LIST
+- auto   : 每15分钟查 Binance 24h涨幅榜，按涨幅% + 成交量双条件筛选
 """
-import asyncio
 import logging
 import time
-from typing import List
+from typing import List, Dict
 
 logger = logging.getLogger(__name__)
+
+# 稳定币/计价币黑名单
+_STABLES = {"USDC","BUSD","TUSD","USDP","FDUSD","DAI","USDD",
+            "SUSD","FRAX","LUSD","EUR","GBP","AUD","BRL"}
 
 
 class SymbolScanner:
     def __init__(self, exchange, config):
         self.ex  = exchange
         self.cfg = config
-        self._symbols: List[str]  = []
+        self._symbols: List[str] = []
         self._last_refresh: float = 0
+        # 上次筛选的详细信息（供 dashboard 展示）
+        self.last_scan_detail: List[Dict] = []
+        self.last_scan_time: float = 0
 
     async def get_symbols(self) -> List[str]:
         mode = getattr(self.cfg, "SCAN_MODE", "single")
@@ -29,69 +35,88 @@ class SymbolScanner:
             return list(self.cfg.SYMBOL_LIST)
 
         if mode == "auto":
+            interval = getattr(self.cfg, "AUTO_REFRESH_SEC", 900)
             now = time.time()
-            interval = getattr(self.cfg, "AUTO_REFRESH_INTERVAL", 3600)
-            if not self._symbols or (now - self._last_refresh) > interval:
-                self._symbols = await self._auto_select()
+            if not self._symbols or (now - self._last_refresh) >= interval:
+                self._symbols = await self._scan_gainers()
                 self._last_refresh = now
+                self.last_scan_time = now
             return self._symbols
 
         return [self.cfg.SYMBOL]
 
-    async def _auto_select(self) -> List[str]:
+    async def _scan_gainers(self) -> List[str]:
         """
-        从 Binance 24h ticker 中筛选候选币种：
-        条件：USDT计价 + 成交额在设定范围内 + 价格合理 + 按成交额从高到低取前N个
+        查 Binance 24h ticker，筛选条件：
+        1. USDT 计价
+        2. 非稳定币
+        3. |涨幅| >= AUTO_MIN_GAIN_PCT  （涨跌都算，大振幅 = 容易出插针）
+        4. 成交额 >= AUTO_MIN_VOLUME_USDT
+        5. 价格 >= AUTO_MIN_PRICE
+        按 |涨幅| 从高到低，取前 AUTO_MAX_SYMBOLS 个
         """
+        min_gain = getattr(self.cfg, "AUTO_MIN_GAIN_PCT",    30.0)
+        min_vol  = getattr(self.cfg, "AUTO_MIN_VOLUME_USDT", 20_000_000)
+        min_px   = getattr(self.cfg, "AUTO_MIN_PRICE",       0.0001)
+        max_n    = getattr(self.cfg, "AUTO_MAX_SYMBOLS",      10)
+
         try:
             tickers = await self.ex._request("GET", "/api/v3/ticker/24hr")
         except Exception as e:
-            logger.error(f"获取24h行情失败: {e}")
-            return [self.cfg.SYMBOL]
+            logger.error(f"扫描涨幅榜失败: {e}")
+            return self._symbols or [self.cfg.SYMBOL]
 
         candidates = []
-        min_vol  = getattr(self.cfg, "AUTO_MIN_VOLUME_USDT", 5_000_000)
-        max_vol  = getattr(self.cfg, "AUTO_MAX_VOLUME_USDT", 200_000_000)
-        min_price= getattr(self.cfg, "AUTO_MIN_PRICE", 0.001)
-        max_n    = getattr(self.cfg, "AUTO_MAX_SYMBOLS", 10)
-
         for t in tickers:
             sym = t.get("symbol", "")
             if not sym.endswith("USDT"):
                 continue
-            # 排除稳定币
             base = sym[:-4]
-            if base in ("USDC","BUSD","TUSD","USDP","FDUSD","DAI","EUR","GBP"):
+            if base in _STABLES:
+                continue
+            # 排除杠杆代币（UP/DOWN/BULL/BEAR后缀）
+            if any(base.endswith(s) for s in ("UP","DOWN","BULL","BEAR","3L","3S")):
                 continue
             try:
-                vol   = float(t.get("quoteVolume", 0))
-                price = float(t.get("lastPrice", 0))
-                # 波动率（24h振幅 / 收盘价）作为插针潜力指标
-                hi    = float(t.get("highPrice", price))
-                lo    = float(t.get("lowPrice",  price))
-                amp   = (hi - lo) / price if price > 0 else 0
+                gain_pct = float(t.get("priceChangePercent", 0))  # 已是百分比
+                vol_usdt = float(t.get("quoteVolume", 0))
+                price    = float(t.get("lastPrice", 0))
+                high     = float(t.get("highPrice", price))
+                low      = float(t.get("lowPrice",  price))
+                amp_pct  = (high - low) / price * 100 if price > 0 else 0
             except Exception:
                 continue
 
-            if min_vol <= vol <= max_vol and price >= min_price:
+            if (abs(gain_pct) >= min_gain
+                    and vol_usdt >= min_vol
+                    and price >= min_px):
                 candidates.append({
-                    "symbol": sym,
-                    "volume": vol,
-                    "amp":    amp,
-                    "price":  price,
+                    "symbol":    sym,
+                    "gain_pct":  round(gain_pct, 2),
+                    "amp_pct":   round(amp_pct, 2),
+                    "vol_usdt":  vol_usdt,
+                    "price":     price,
                 })
 
-        if not candidates:
-            logger.warning("auto模式未找到候选币，回退到 SYMBOL")
-            return [self.cfg.SYMBOL]
+        # 按 |涨幅| 降序
+        candidates.sort(key=lambda x: abs(x["gain_pct"]), reverse=True)
+        selected = candidates[:max_n]
+        self.last_scan_detail = selected
 
-        # 综合评分：成交额归一化 * 0.6 + 振幅归一化 * 0.4
-        max_v = max(c["volume"] for c in candidates) or 1
-        max_a = max(c["amp"]    for c in candidates) or 1
-        for c in candidates:
-            c["score"] = (c["volume"]/max_v)*0.6 + (c["amp"]/max_a)*0.4
+        syms = [c["symbol"] for c in selected]
+        if syms:
+            summary = ", ".join(
+                f"{c['symbol']}({c['gain_pct']:+.1f}% {c['vol_usdt']/1e6:.0f}M)"
+                for c in selected
+            )
+            logger.info(f"涨幅榜筛选 {len(syms)} 个: {summary}")
+        else:
+            logger.warning(f"涨幅榜无符合条件的币 (涨幅≥{min_gain}%, 成交额≥{min_vol/1e6:.0f}M)，保持原列表")
+            syms = self._symbols or [self.cfg.SYMBOL]
 
-        candidates.sort(key=lambda x: x["score"], reverse=True)
-        selected = [c["symbol"] for c in candidates[:max_n]]
-        logger.info(f"auto筛选结果({len(selected)}个): {selected}")
-        return selected
+        return syms
+
+    async def force_refresh(self):
+        """手动触发立即重新筛选"""
+        self._last_refresh = 0
+        return await self.get_symbols()

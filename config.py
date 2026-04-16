@@ -25,11 +25,11 @@ SYMBOL_LIST = [
 ]
 
 # auto 模式：从24h行情中自动筛选满足条件的币
-AUTO_MIN_VOLUME_USDT  = 5_000_000   # 最低24h成交额（USDT）
-AUTO_MAX_VOLUME_USDT  = 200_000_000 # 最高（避免BTC/ETH等流动性太深）
-AUTO_MIN_PRICE        = 0.001       # 最低价（避免极小价格精度问题）
-AUTO_MAX_SYMBOLS      = 10          # 最多同时扫描几个币
-AUTO_REFRESH_INTERVAL = 3600        # 多少秒重新筛选一次币单
+AUTO_MIN_GAIN_PCT     = 30.0        # 24h涨幅下限 %（绝对值，涨跌均算）
+AUTO_MIN_VOLUME_USDT  = 20_000_000  # 24h最低成交额（USDT），默认20M
+AUTO_MIN_PRICE        = 0.0001      # 最低价格（过滤极小数精度问题）
+AUTO_MAX_SYMBOLS      = 10          # 最多同时监控几个币
+AUTO_REFRESH_SEC      = 900         # 重新查涨幅榜间隔（秒），默认15分钟
 
 # ── 插针检测参数 ──────────────────────────────────────────────
 SPIKE_RATIO      = 3.0    # 针长 / K线实体 倍数阈值

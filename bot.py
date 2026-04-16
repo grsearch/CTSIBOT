@@ -130,6 +130,7 @@ class TradingBot:
         STATE["dry_run"]   = getattr(cfg_module, "DRY_RUN", False)
         STATE["scan_mode"] = getattr(cfg_module, "SCAN_MODE", "single")
         STATE["live_config"] = _snapshot_config()
+            STATE["scan_mode"] = getattr(cfg_module, "SCAN_MODE", "single")
 
     async def start(self):
         logger.info("=== Spike Bot Starting (multi-symbol) ===")
@@ -217,6 +218,7 @@ class TradingBot:
             "ORDER_USDT", "MAX_OPEN_ORDERS", "TREND_FILTER",
             "DAILY_LOSS_LIMIT_USDT", "MAX_DRAWDOWN_PCT", "MAX_CONSECUTIVE_LOSSES",
             "SCAN_MODE", "SYMBOL", "SYMBOL_LIST",
+            "AUTO_MIN_GAIN_PCT", "AUTO_MIN_VOLUME_USDT", "AUTO_MAX_SYMBOLS", "AUTO_REFRESH_SEC",
         }
         changed = []
         for k, v in updates.items():
@@ -226,6 +228,7 @@ class TradingBot:
         if changed:
             logger.info(f"参数热更新: {', '.join(changed)}")
             STATE["live_config"] = _snapshot_config()
+            STATE["scan_mode"] = getattr(cfg_module, "SCAN_MODE", "single")
             # 重建所有检测器以应用新参数
             for sym, worker in self._workers.items():
                 worker.detector = SpikeDetector(cfg_module)
@@ -259,3 +262,22 @@ async def run():
         await _bot_instance.start()
     finally:
         await _bot_instance.ex.close()
+
+# patch _snapshot_config to include auto params
+_orig_snapshot = _snapshot_config
+def _snapshot_config():
+    d = {}
+    keys = [
+        "SCAN_MODE","SYMBOL","SYMBOL_LIST",
+        "SPIKE_RATIO","SPIKE_VS_ATR","ATR_PERIOD","RECOVERY_RATIO","MIN_SPIKE_PIPS",
+        "ORDER_USDT","MAX_OPEN_ORDERS",
+        "TP_RATIO","SL_RATIO","MAX_HOLD_SECONDS",
+        "MA_PERIOD","TREND_FILTER","POLL_INTERVAL_MS",
+        "DAILY_LOSS_LIMIT_USDT","MAX_DRAWDOWN_PCT",
+        "MAX_CONSECUTIVE_LOSSES","MAX_DAILY_TRADES",
+        "AUTO_MIN_GAIN_PCT","AUTO_MIN_VOLUME_USDT","AUTO_MAX_SYMBOLS","AUTO_REFRESH_SEC",
+        "DRY_RUN",
+    ]
+    for k in keys:
+        d[k] = getattr(cfg_module, k, None)
+    return d
