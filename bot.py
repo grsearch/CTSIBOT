@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────
 STATE = {
     "running":          False,
+    "diag":             {},  # 实时诊断数据
     "dry_run":          False,
     "scan_mode":        "single",
     "symbols_active":   [],          # 当前扫描的币种列表
@@ -84,6 +85,29 @@ class SymbolWorker:
             low=latest["low"],    close=latest["close"],
             volume=latest["volume"],
         )
+
+        # 更新诊断数据（供 dashboard 显示为什么没触发）
+        atr   = self.detector._atr_cache
+        lower = candle.lower_wick
+        upper = candle.upper_wick
+        body  = max(candle.body, candle.range * 0.01)
+        STATE["diag"] = {
+            "symbol":        self.symbol,
+            "last_open":     candle.open,
+            "last_high":     candle.high,
+            "last_low":      candle.low,
+            "last_close":    candle.close,
+            "lower_wick":    lower,
+            "upper_wick":    upper,
+            "body":          body,
+            "atr":           atr,
+            "ratio_body":    max(lower, upper) / body if body > 0 else 0,
+            "ratio_atr":     max(lower, upper) / atr  if atr  > 0 else 0,
+            "recovery":      (candle.close - candle.low) / lower if lower > 0 else 0,
+            "cfg_spike_ratio": cfg_module.SPIKE_RATIO,
+            "cfg_spike_atr":   cfg_module.SPIKE_VS_ATR,
+            "cfg_recovery":    cfg_module.RECOVERY_RATIO,
+        }
 
         signal = self.detector.detect(candle)
         if signal:

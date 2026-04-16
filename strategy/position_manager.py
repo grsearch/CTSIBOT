@@ -125,7 +125,7 @@ class PositionManager:
                 logger.debug(f"Already have {signal.direction} on {sym}")
                 return None
 
-        if signal.score < 40:
+        if signal.score < 25:  # 降低评分门槛（原40太严）
             logger.debug(f"Score too low: {signal.score}")
             return None
 

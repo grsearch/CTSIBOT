@@ -102,7 +102,9 @@ class SpikeDetector:
 
         # ── 下插针 → 做多 ────────────────────────────────────
         lower = candle.lower_wick
-        if lower >= self.cfg.MIN_SPIKE_PIPS:
+        # MIN_SPIKE_PIPS 作为价格的相对比例（例如 0.00005 = 0.005%），更适合不同价格的币
+        min_abs = candle.close * self.cfg.MIN_SPIKE_PIPS if self.cfg.MIN_SPIKE_PIPS < 0.01 else self.cfg.MIN_SPIKE_PIPS
+        if lower >= min_abs:
             body  = max(candle.body, candle.range * 0.01)  # 防止体为0
             ratio_body = lower / body
             ratio_atr  = lower / atr
@@ -144,7 +146,8 @@ class SpikeDetector:
 
         # ── 上插针 → 做空（现货卖出持仓）────────────────────────
         upper = candle.upper_wick
-        if upper >= self.cfg.MIN_SPIKE_PIPS:
+        min_abs2 = candle.close * self.cfg.MIN_SPIKE_PIPS if self.cfg.MIN_SPIKE_PIPS < 0.01 else self.cfg.MIN_SPIKE_PIPS
+        if upper >= min_abs2:
             body  = max(candle.body, candle.range * 0.01)
             ratio_body = upper / body
             ratio_atr  = upper / atr

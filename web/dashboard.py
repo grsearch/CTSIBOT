@@ -247,6 +247,13 @@ button:disabled{opacity:.4;cursor:not-allowed}
     <div class="ch">错误日志</div>
     <div class="logbox" id="logbox"><div class="i">等待运行...</div></div>
   </div>
+
+  <div class="card" style="border-color:rgba(61,142,255,.2)">
+    <div class="ch" style="color:var(--bl)">实时诊断
+      <span style="font-weight:400;font-size:10px;color:var(--mt);margin-left:4px">— 为什么没有交易？</span>
+    </div>
+    <div id="diagBox" style="font-size:11px;line-height:2;color:var(--mt)">等待数据...</div>
+  </div>
 </div>
 
 <!-- ══════════ TAB: 参数设置 ══════════ -->
@@ -316,21 +323,23 @@ button:disabled{opacity:.4;cursor:not-allowed}
 <!-- ══════════ TAB: 网格搜索 ══════════ -->
 <div class="panel" id="tab-grid">
   <div class="card">
-    <div class="ch">搜索空间配置</div>
+    <div class="ch">搜索空间配置
+      <span style="font-weight:400;font-size:10px;color:var(--mt);margin-left:4px">— 对所有当前监控的币种并行回测</span>
+    </div>
     <div class="form-row">
       <div class="field"><label>SPIKE_RATIO 候选</label>
-        <input type="text" id="g_spike_ratio" value="2.5,3.0,3.5,4.0">
+        <input type="text" id="g_spike_ratio" value="1.5,2.0,2.5,3.0">
         <span class="hint">逗号分隔多个值</span></div>
       <div class="field"><label>SPIKE_VS_ATR 候选</label>
-        <input type="text" id="g_spike_atr" value="2.0,2.5,3.0"></div>
+        <input type="text" id="g_spike_atr" value="1.0,1.5,2.0,2.5"></div>
       <div class="field"><label>RECOVERY_RATIO 候选</label>
-        <input type="text" id="g_recovery" value="0.40,0.50,0.60"></div>
+        <input type="text" id="g_recovery" value="0.30,0.40,0.50"></div>
       <div class="field"><label>TP_RATIO 候选</label>
-        <input type="text" id="g_tp" value="0.60,0.70,0.80"></div>
+        <input type="text" id="g_tp" value="0.55,0.65,0.75"></div>
       <div class="field"><label>SL_RATIO 候选</label>
-        <input type="text" id="g_sl" value="0.08,0.10,0.15"></div>
+        <input type="text" id="g_sl" value="0.08,0.12,0.18"></div>
       <div class="field"><label>MAX_HOLD_SECONDS 候选</label>
-        <input type="text" id="g_hold" value="20,30,45"></div>
+        <input type="text" id="g_hold" value="15,20,30"></div>
     </div>
     <div style="margin-top:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <div class="field" style="flex-direction:row;align-items:center;gap:8px;margin:0">
@@ -350,23 +359,36 @@ button:disabled{opacity:.4;cursor:not-allowed}
       <span id="gridCombo" style="font-size:10px;color:var(--mt)"></span>
     </div>
   </div>
+
+  <!-- 进度 + 日志 -->
   <div class="card" id="gridProgressCard" style="display:none">
-    <div class="ch">进度 <span id="gridPct" class="am">0%</span>
+    <div class="ch">
+      进度 <span id="gridPct" class="am">0%</span>
       <span id="gridStatus" style="font-weight:400;color:var(--mt);font-size:10px;margin-left:8px"></span>
     </div>
     <div class="prog-bar"><div class="prog-fill" id="gridBar" style="width:0%"></div></div>
+    <div id="gridLog" style="margin-top:8px;font-size:10px;color:var(--mt);line-height:1.9"></div>
   </div>
+
+  <!-- 汇总 Top10（跨所有币种） -->
   <div class="card" id="gridResultCard" style="display:none">
-    <div class="ch">Top 10 结果
+    <div class="ch">
+      汇总 Top 10
+      <span style="font-weight:400;font-size:10px;color:var(--mt);margin-left:4px">— 跨所有币种合并统计</span>
       <button class="success" style="margin-left:auto;padding:3px 10px;font-size:10px" onclick="applyBest()">应用最优参数</button>
     </div>
     <div style="overflow-x:auto">
-    <table id="gridTable">
-      <thead><tr><th>#</th><th>SR</th><th>ATR</th><th>REC</th><th>TP</th><th>SL</th><th>HOLD</th>
-        <th>N</th><th>胜率</th><th>期望值</th><th>Sharpe</th><th>PnL</th><th></th></tr></thead>
+    <table>
+      <thead><tr>
+        <th>#</th><th>SR</th><th>ATR</th><th>REC</th><th>TP</th><th>SL</th><th>HOLD</th>
+        <th>总笔数</th><th>胜率</th><th>期望值</th><th>Sharpe</th><th>总PnL</th><th>覆盖币</th><th></th>
+      </tr></thead>
       <tbody id="gridTb"></tbody>
     </table></div>
   </div>
+
+  <!-- 按币种分开的结果 -->
+  <div id="gridSymCards"></div>
 </div>
 
 <!-- ══════════ TAB: 币种管理 ══════════ -->
@@ -413,13 +435,13 @@ FETUSDT</textarea>
       <div class="form-row">
         <div class="field">
           <label>最小涨幅绝对值 %</label>
-          <input type="number" id="auto_gain" value="30" min="5" max="200" step="5">
+          <input type="number" id="auto_gain" value="15" min="5" max="200" step="5">
           <span class="hint">|涨幅| ≥ 此值（涨跌均算）</span>
         </div>
         <div class="field">
           <label>最低24h成交量 (USDT)</label>
-          <input type="number" id="auto_vol" value="20000000" step="1000000">
-          <span class="hint">20000000 = 20M USDT</span>
+          <input type="number" id="auto_vol" value="10000000" step="1000000">
+          <span class="hint">10000000 = 10M USDT</span>
         </div>
         <div class="field">
           <label>最多监控币数</label>
@@ -585,6 +607,22 @@ function renderMonitor(d){
         </tr>`;
       }).join('');
 
+  // 实时诊断
+  if(d.diag){
+    const dg = d.diag;
+    let lines = [];
+    lines.push(`📡 <span style="color:var(--tx)">最新K线</span>: open=${dg.last_open?.toFixed(6)||'—'} high=${dg.last_high?.toFixed(6)||'—'} low=${dg.last_low?.toFixed(6)||'—'} close=${dg.last_close?.toFixed(6)||'—'}`);
+    lines.push(`📏 <span style="color:var(--tx)">下影线</span>: ${dg.lower_wick?.toFixed(6)||'—'} &nbsp;|&nbsp; 上影线: ${dg.upper_wick?.toFixed(6)||'—'} &nbsp;|&nbsp; 实体: ${dg.body?.toFixed(6)||'—'}`);
+    lines.push(`📊 <span style="color:var(--tx)">ATR(20)</span>: ${dg.atr?.toFixed(6)||'—'} &nbsp;|&nbsp; 针/实体比: ${dg.ratio_body?.toFixed(2)||'—'} (需≥${dg.cfg_spike_ratio||'—'}) &nbsp;|&nbsp; 针/ATR比: ${dg.ratio_atr?.toFixed(2)||'—'} (需≥${dg.cfg_spike_atr||'—'})`);
+    const passBody = dg.ratio_body >= dg.cfg_spike_ratio;
+    const passAtr  = dg.ratio_atr  >= dg.cfg_spike_atr;
+    const passRec  = dg.recovery   >= dg.cfg_recovery;
+    lines.push(`🔍 <span style="color:var(--tx)">检测结果</span>: 针/实体 ${passBody?'<span style="color:var(--gr)">✓</span>':'<span style="color:var(--rd)">✗</span>'} &nbsp; 针/ATR ${passAtr?'<span style="color:var(--gr)">✓</span>':'<span style="color:var(--rd)">✗</span>'} &nbsp; 回归比${dg.recovery?.toFixed(2)||'—'} ${passRec?'<span style="color:var(--gr)">✓</span>':'<span style="color:var(--rd)">✗</span>'}`);
+    if(d.signals_found>0) lines.push(`✅ <span style="color:var(--gr)">已发现 ${d.signals_found} 个信号</span>${d.dry_run?' (空跑未下单)':''}`);
+    else lines.push(`⏳ <span style="color:var(--am)">暂无信号 — 等待符合条件的插针出现</span>`);
+    document.getElementById('diagBox').innerHTML = lines.join('<br>');
+  }
+
   if(d.errors?.length){
     document.getElementById('logbox').innerHTML =
       d.errors.map(e=>`<div class="e">✗ ${e}</div>`).join('');
@@ -592,10 +630,23 @@ function renderMonitor(d){
 }
 
 // ── 参数面板 ──────────────────────────────────────────────
+let _userEditingParams = false;
+let _paramEditTimer = null;
+function _markParamEditing(){
+  _userEditingParams = true;
+  clearTimeout(_paramEditTimer);
+  _paramEditTimer = setTimeout(()=>{ _userEditingParams=false; }, 10000);
+}
+// Lock params form on any focus
+document.querySelectorAll('[id^="p_"]').forEach(el=>{
+  if(el) el.addEventListener('focus', _markParamEditing);
+});
+
 function fillParams(cfg){
   const keys = ['SPIKE_RATIO','SPIKE_VS_ATR','RECOVERY_RATIO','MIN_SPIKE_PIPS',
     'TP_RATIO','SL_RATIO','MAX_HOLD_SECONDS','ORDER_USDT',
     'DAILY_LOSS_LIMIT_USDT','MAX_DRAWDOWN_PCT','MAX_CONSECUTIVE_LOSSES','MAX_OPEN_ORDERS'];
+  if(_userEditingParams) return;  // 用户正在编辑，不覆盖
   keys.forEach(k => {
     const el = document.getElementById('p_'+k);
     if(el && document.activeElement !== el) el.value = cfg[k] ?? '';
@@ -647,14 +698,28 @@ function startGrid(){
   post('/api/grid_search', p).then(d => { if(!d.ok) alert('启动失败: '+d.error); });
 }
 function renderGrid(d){
-  if(!d.grid_running && !d.grid_progress) return;
-  document.getElementById('gridProgressCard').style.display = 'block';
-  const pct = d.grid_total>0 ? Math.round(d.grid_progress/d.grid_total*100) : 0;
-  document.getElementById('gridPct').textContent = pct+'%';
-  document.getElementById('gridBar').style.width = pct+'%';
-  document.getElementById('gridStatus').textContent =
-    d.grid_running ? d.grid_progress+' / '+d.grid_total+' 组合' : '✓ 搜索完成';
-  if(!d.grid_running) document.getElementById('gridBtn').disabled = false;
+  const hasActivity = d.grid_running || d.grid_progress > 0;
+  if(!hasActivity && !d.grid_results?.length && !d.grid_sym_results) return;
+
+  if(hasActivity || d.grid_progress > 0){
+    document.getElementById('gridProgressCard').style.display = 'block';
+    const pct = d.grid_total > 0 ? Math.round(d.grid_progress/d.grid_total*100) : 0;
+    document.getElementById('gridPct').textContent = pct+'%';
+    document.getElementById('gridBar').style.width = pct+'%';
+    document.getElementById('gridStatus').textContent =
+      d.grid_running
+        ? `${d.grid_progress} / ${d.grid_total}`
+        : '✓ 搜索完成';
+    if(!d.grid_running) document.getElementById('gridBtn').disabled = false;
+  }
+
+  // 进度日志
+  if(d.grid_log?.length){
+    document.getElementById('gridLog').innerHTML =
+      d.grid_log.map(l => `<div>→ ${l}</div>`).join('');
+  }
+
+  // 汇总 Top10
   if(d.grid_results?.length){
     document.getElementById('gridResultCard').style.display = 'block';
     document.getElementById('gridTb').innerHTML = d.grid_results.slice(0,10).map((r,i) => `
@@ -668,32 +733,102 @@ function renderGrid(d){
         <td class="${r.m.expectancy>0?'gr':'rd'}">${r.m.expectancy.toFixed(5)}</td>
         <td>${r.m.sharpe.toFixed(3)}</td>
         <td class="${r.m.total_pnl>0?'gr':'rd'}">${r.m.total_pnl.toFixed(4)}</td>
+        <td class="am">${r.m.symbols_covered||'—'}</td>
         <td><button style="padding:2px 8px;font-size:9px" onclick="applyRow(${i})">应用</button></td>
       </tr>`).join('');
   }
+
+  // 按币种分开展示
+  if(d.grid_sym_results && Object.keys(d.grid_sym_results).length){
+    const container = document.getElementById('gridSymCards');
+    container.innerHTML = Object.entries(d.grid_sym_results).map(([sym, results]) => {
+      if(!results?.length) return '';
+      const rows = results.slice(0,5).map((r,i) => `
+        <tr class="${i===0?'result-best':''}">
+          <td class="${i===0?'gr':''}">${i+1}</td>
+          <td>${r.p.SPIKE_RATIO}</td><td>${r.p.SPIKE_VS_ATR}</td>
+          <td>${r.p.RECOVERY_RATIO}</td><td>${r.p.TP_RATIO}</td>
+          <td>${r.p.SL_RATIO}</td><td>${r.p.MAX_HOLD_SECONDS}</td>
+          <td>${r.m.n}</td>
+          <td class="${r.m.win_rate>=55?'gr':'rd'}">${r.m.win_rate}%</td>
+          <td class="${r.m.expectancy>0?'gr':'rd'}">${r.m.expectancy.toFixed(5)}</td>
+          <td>${r.m.sharpe.toFixed(3)}</td>
+          <td class="${r.m.total_pnl>0?'gr':'rd'}">${r.m.total_pnl.toFixed(4)}</td>
+          <td><button style="padding:2px 8px;font-size:9px" onclick="applySymRow('${sym}',${i})">应用</button></td>
+        </tr>`).join('');
+      return \`
+        <div class="card" style="margin-top:0">
+          <div class="ch"><span class="am">${sym}</span>
+            <span style="font-weight:400;color:var(--mt);font-size:10px;margin-left:6px">Top 5</span>
+          </div>
+          <div style="overflow-x:auto">
+          <table><thead><tr>
+            <th>#</th><th>SR</th><th>ATR</th><th>REC</th><th>TP</th><th>SL</th><th>HOLD</th>
+            <th>N</th><th>胜率</th><th>期望值</th><th>Sharpe</th><th>PnL</th><th></th>
+          </tr></thead><tbody>${rows}</tbody></table>
+          </div>
+        </div>\`;
+    }).join('');
+  }
 }
+
 function applyBest(){ if(_D.grid_best) applyGridParams(_D.grid_best); }
 function applyRow(i){ if(_D.grid_results?.[i]) applyGridParams(_D.grid_results[i].p); }
+function applySymRow(sym, i){
+  const r = _D.grid_sym_results?.[sym]?.[i];
+  if(r) applyGridParams(r.p);
+}
 function applyGridParams(p){
-  if(!confirm('应用这组参数？')) return;
-  post('/api/set_params', p).then(d => alert(d.ok?'✓ 已应用':'✗ '+d.error));
+  if(!confirm('应用这组参数到当前配置？')) return;
+  post('/api/set_params', p).then(d => {
+    alert(d.ok ? '✓ 已应用: '+d.changed.join(', ') : '✗ '+d.error);
+  });
 }
 
 // ── 币种管理 ─────────────────────────────────────────────
+// 用户正在操作表单时，SSE 推送不覆盖选项（防止闪退）
+let _userEditingSymbols = false;
+let _userEditTimer = null;
+
+function _markUserEditing(){
+  _userEditingSymbols = true;
+  clearTimeout(_userEditTimer);
+  _userEditTimer = setTimeout(() => { _userEditingSymbols = false; }, 8000);
+}
+
 document.querySelectorAll('input[name=scanMode]').forEach(r => {
+  r.addEventListener('mousedown', _markUserEditing);
   r.addEventListener('change', () => {
+    _markUserEditing();
     ['single','list','auto'].forEach(m =>
       document.getElementById('sm_'+m+'_opt').style.display = r.value===m?'block':'none'
     );
   });
 });
+// 任意表单元素交互都锁定
+['sym_single','sym_list','auto_gain','auto_vol','auto_max_n','auto_refresh_min'].forEach(id => {
+  const el = document.getElementById(id);
+  if(el) el.addEventListener('focus', _markUserEditing);
+});
+
+function _showModeOpts(mode){
+  ['single','list','auto'].forEach(m =>
+    document.getElementById('sm_'+m+'_opt').style.display = m===mode?'block':'none'
+  );
+}
 
 function renderSymbolTab(d){
   const mode = d.scan_mode || 'single';
   document.getElementById('scanModeLabel').textContent = mode;
 
-  const rb = document.querySelector(`input[name=scanMode][value=${mode}]`);
-  if(rb && !rb.checked){ rb.checked=true; rb.dispatchEvent(new Event('change')); }
+  // ★ 只有用户没在操作时才同步 radio 和面板显示
+  if(!_userEditingSymbols){
+    const rb = document.querySelector(`input[name=scanMode][value=${mode}]`);
+    if(rb && !rb.checked){
+      rb.checked = true;
+      _showModeOpts(mode);
+    }
+  }
 
   if(d.live_config?.SYMBOL){
     const el = document.getElementById('sym_single');
@@ -868,8 +1003,11 @@ async def handle_stream(req):
                 "grid_total":       STATE.get("grid_total",0),
                 "grid_results":     STATE.get("grid_results",[])[:10],
                 "grid_best":        STATE.get("grid_best"),
+                "grid_sym_results": STATE.get("grid_sym_results",{}),
+                "grid_log":         STATE.get("grid_log",[])[-8:],
                 "next_refresh_in":  round(next_refresh_in),
                 "gainer_detail":    gainer_detail,
+                "diag":             STATE.get("diag", {}),
             }
             await resp.write(f"data: {json.dumps(payload)}\n\n".encode())
             await asyncio.sleep(1)
@@ -926,107 +1064,186 @@ async def handle_grid_search(req):
 
 
 async def _run_grid_search(params: dict):
+    """
+    多币种网格搜索：
+    1. 获取当前所有活跃币种
+    2. 每个币种独立拉取历史K线
+    3. 对所有参数组合回测，收集每笔交易PnL
+    4. 按币种分开显示 + 汇总跨币种排名
+    """
     from core.exchange import BinanceREST
     from strategy.detector import SpikeDetector, Candle
 
-    STATE["grid_running"]  = True
-    STATE["grid_progress"] = 0
-    STATE["grid_results"]  = []
-    STATE["grid_best"]     = None
+    STATE["grid_running"]     = True
+    STATE["grid_progress"]    = 0
+    STATE["grid_total"]       = 0
+    STATE["grid_results"]     = []
+    STATE["grid_best"]        = None
+    STATE["grid_sym_results"] = {}
+    STATE["grid_log"]         = []
+
+    def log(msg):
+        STATE["grid_log"].append(msg)
+        STATE["grid_log"] = STATE["grid_log"][-30:]
+        logger.info(f"[Grid] {msg}")
 
     try:
-        ex = BinanceREST(cfg_module.API_KEY, cfg_module.API_SECRET, cfg_module.BASE_URL)
+        # ── 1. 确定要回测的币种列表 ──────────────────────────
+        symbols = list(STATE.get("symbols_active", []))
+        if not symbols:
+            symbols = [cfg_module.SYMBOL]
+        log(f"回测币种: {symbols}")
+
         days   = params.get("days", 2)
-        symbol = cfg_module.SYMBOL
-        klines = []
-        end_time = None
-        target_n = days * 86400
-
-        while len(klines) < target_n:
-            p2 = {"symbol": symbol, "interval": "1s", "limit": 1000}
-            if end_time: p2["endTime"] = end_time
-            try:
-                chunk = await ex.get_klines(symbol, "1s", 1000)
-                if not chunk: break
-                klines = chunk + klines
-                end_time = chunk[0]["open_time"] - 1
-                await asyncio.sleep(0.15)
-            except Exception as e:
-                logger.error(f"Grid kline: {e}"); break
-
-        await ex.close()
-        if len(klines) < 200:
-            STATE["grid_running"] = False; return
+        target = params.get("target", "expectancy")
 
         grid = {
-            "SPIKE_RATIO":      params.get("spike_ratio", [3.0]),
-            "SPIKE_VS_ATR":     params.get("spike_atr",   [2.5]),
-            "RECOVERY_RATIO":   params.get("recovery",    [0.5]),
-            "TP_RATIO":         params.get("tp",          [0.7]),
-            "SL_RATIO":         params.get("sl",          [0.1]),
-            "MAX_HOLD_SECONDS": params.get("hold",        [30]),
+            "SPIKE_RATIO":      params.get("spike_ratio", [cfg_module.SPIKE_RATIO]),
+            "SPIKE_VS_ATR":     params.get("spike_atr",   [cfg_module.SPIKE_VS_ATR]),
+            "RECOVERY_RATIO":   params.get("recovery",    [cfg_module.RECOVERY_RATIO]),
+            "TP_RATIO":         params.get("tp",          [cfg_module.TP_RATIO]),
+            "SL_RATIO":         params.get("sl",          [cfg_module.SL_RATIO]),
+            "MAX_HOLD_SECONDS": params.get("hold",        [cfg_module.MAX_HOLD_SECONDS]),
         }
         keys   = list(grid.keys())
         combos = list(itertools.product(*[grid[k] for k in keys]))
-        STATE["grid_total"] = len(combos)
-        target = params.get("target", "expectancy")
+        STATE["grid_total"] = len(symbols) * len(combos)
+        log(f"参数组合: {len(combos)} 种 × {len(symbols)} 个币 = {STATE['grid_total']} 次评估")
 
         class FC:
-            ATR_PERIOD=20; MA_PERIOD=99; TREND_FILTER=False; MIN_SPIKE_PIPS=0.0001
-            def __init__(self,b):
-                for k in dir(b):
+            ATR_PERIOD=20; MA_PERIOD=99; TREND_FILTER=False
+            def __init__(self, base):
+                for k in dir(base):
                     if not k.startswith("_"):
-                        try: setattr(self,k,getattr(b,k))
+                        try: setattr(self, k, getattr(base, k))
                         except: pass
 
-        results = []
-        for idx, combo in enumerate(combos):
-            fc = FC(cfg_module)
-            for k, v in zip(keys, combo): setattr(fc, k, v)
-            det = SpikeDetector(fc)
-            trades = []
-            for i in range(fc.ATR_PERIOD+1, len(klines)):
-                det.update(klines[max(0,i-200):i])
-                k2=klines[i]
-                c=Candle(open_time=k2["open_time"],open=k2["open"],high=k2["high"],
-                         low=k2["low"],close=k2["close"],volume=k2["volume"])
-                sig=det.detect(c)
-                if sig:
-                    future=klines[i+1:i+1+fc.MAX_HOLD_SECONDS]
-                    trades.append(_sim(sig,future))
+        ex = BinanceREST(cfg_module.API_KEY, cfg_module.API_SECRET, cfg_module.BASE_URL)
 
-            STATE["grid_progress"] = idx+1
-            if len(trades) < 8:
-                if idx%10==0: await asyncio.sleep(0)
+        # ── 2. 逐币种拉数据 + 回测 ───────────────────────────
+        # 跨币种汇总：每个参数组合的 trades 列表（所有币加在一起）
+        combo_trades = {i: [] for i in range(len(combos))}
+        all_results_by_sym = {}
+
+        for sym_idx, symbol in enumerate(symbols):
+            log(f"[{sym_idx+1}/{len(symbols)}] 拉取 {symbol} {days}天历史K线...")
+
+            # 拉取历史数据
+            klines   = []
+            end_time = None
+            target_n = days * 86400
+            fetch_err = False
+
+            while len(klines) < target_n:
+                try:
+                    chunk = await ex.get_klines(symbol, "1s", 1000)
+                    if not chunk: break
+                    klines = chunk + klines
+                    end_time = chunk[0]["open_time"] - 1
+                    await asyncio.sleep(0.12)
+                except Exception as e:
+                    log(f"  {symbol} 拉取失败: {e}")
+                    fetch_err = True
+                    break
+
+            if len(klines) < 100:
+                log(f"  {symbol} 数据不足({len(klines)}根)，跳过")
+                STATE["grid_progress"] += len(combos)
                 continue
 
-            wins=sum(1 for p in trades if p>0)
-            wr=wins/len(trades)*100
-            tp2=sum(trades)
-            aw=sum(p for p in trades if p>0)/max(wins,1)
-            al=abs(sum(p for p in trades if p<0))/max(len(trades)-wins,1)
-            ex2=(wins/len(trades))*aw-((len(trades)-wins)/len(trades))*al
-            std=statistics.stdev(trades) if len(trades)>1 else 1e-9
-            sh=(sum(trades)/len(trades))/std if std>0 else 0
-            m={"n":len(trades),"win_rate":round(wr,1),"total_pnl":round(tp2,5),
-               "expectancy":round(ex2,6),"sharpe":round(sh,3)}
-            results.append({"score":m.get(target,0),"p":dict(zip(keys,combo)),"m":m})
+            log(f"  {symbol} 获取 {len(klines)} 根K线，开始评估...")
 
-            if idx%5==0:
-                results.sort(key=lambda x:x["score"],reverse=True)
-                STATE["grid_results"]=results[:10]
-                STATE["grid_best"]=results[0]["p"] if results else None
-                await asyncio.sleep(0)
+            # 对该币种跑所有参数组合
+            sym_combo_results = []
+            for idx, combo in enumerate(combos):
+                fc = FC(cfg_module)
+                for k, v in zip(keys, combo): setattr(fc, k, v)
 
-        results.sort(key=lambda x:x["score"],reverse=True)
-        STATE["grid_results"]=results[:10]
-        STATE["grid_best"]=results[0]["p"] if results else None
-        logger.info(f"网格完成 {len(results)} 组合，最优: {STATE['grid_best']}")
+                det    = SpikeDetector(fc)
+                trades = []
+                for i in range(fc.ATR_PERIOD + 1, len(klines)):
+                    det.update(klines[max(0, i-200):i])
+                    k2 = klines[i]
+                    c  = Candle(open_time=k2["open_time"], open=k2["open"],
+                                high=k2["high"], low=k2["low"],
+                                close=k2["close"], volume=k2["volume"])
+                    sig = det.detect(c)
+                    if sig:
+                        future = klines[i+1 : i+1+fc.MAX_HOLD_SECONDS]
+                        pnl    = _sim(sig, future)
+                        trades.append(pnl)
+                        combo_trades[idx].append(pnl)  # 汇总
+
+                STATE["grid_progress"] += 1
+                if idx % 5 == 0: await asyncio.sleep(0)
+
+                if len(trades) < 3:
+                    continue
+
+                m = _calc_metrics(trades)
+                sym_combo_results.append({
+                    "score": m.get(target, 0),
+                    "p":     dict(zip(keys, combo)),
+                    "m":     m,
+                })
+
+            # 该币种 Top10
+            sym_combo_results.sort(key=lambda x: x["score"], reverse=True)
+            all_results_by_sym[symbol] = sym_combo_results[:10]
+            STATE["grid_sym_results"] = all_results_by_sym
+            log(f"  {symbol} 完成，有效组合 {len(sym_combo_results)} 个")
+
+        await ex.close()
+
+        # ── 3. 跨币种汇总排名 ────────────────────────────────
+        log("汇总跨币种排名...")
+        agg_results = []
+        for idx, combo in enumerate(combos):
+            all_trades = combo_trades[idx]
+            if len(all_trades) < 3:
+                continue
+            m = _calc_metrics(all_trades)
+            m["symbols_covered"] = sum(
+                1 for sym_res in all_results_by_sym.values()
+                if any(r["p"] == dict(zip(keys, combo)) for r in sym_res)
+            )
+            agg_results.append({
+                "score": m.get(target, 0),
+                "p":     dict(zip(keys, combo)),
+                "m":     m,
+            })
+
+        agg_results.sort(key=lambda x: x["score"], reverse=True)
+        STATE["grid_results"] = agg_results[:10]
+        STATE["grid_best"]    = agg_results[0]["p"] if agg_results else None
+        log(f"完成！汇总有效组合 {len(agg_results)} 个，最优: {STATE['grid_best']}")
 
     except Exception as e:
         logger.error(f"Grid error: {e}", exc_info=True)
+        log(f"错误: {e}")
     finally:
-        STATE["grid_running"]=False
+        STATE["grid_running"] = False
+
+
+def _calc_metrics(trades: list) -> dict:
+    wins     = sum(1 for p in trades if p > 0)
+    n        = len(trades)
+    wr       = wins / n * 100
+    total    = sum(trades)
+    avg_win  = sum(p for p in trades if p > 0) / max(wins, 1)
+    avg_loss = abs(sum(p for p in trades if p < 0)) / max(n - wins, 1)
+    expect   = (wins/n) * avg_win - ((n-wins)/n) * avg_loss
+    std      = statistics.stdev(trades) if n > 1 else 1e-9
+    sharpe   = (total/n) / std if std > 0 else 0
+    return {
+        "n":          n,
+        "win_rate":   round(wr, 1),
+        "total_pnl":  round(total, 5),
+        "expectancy": round(expect, 6),
+        "sharpe":     round(sharpe, 3),
+        "avg_win":    round(avg_win, 6),
+        "avg_loss":   round(avg_loss, 6),
+    }
 
 
 def _sim(sig, future) -> float:
