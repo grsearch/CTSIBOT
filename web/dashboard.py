@@ -953,24 +953,30 @@ async def _run_grid_search(params: dict):
                 continue
             log("  " + symbol + " " + str(len(klines)) + " 根，开始评估...")
 
+            # ── 预构建 Candle 对象（整个 symbol 只做一次）──
+            candle_objs = [
+                Candle(open_time=k2["open_time"], open=k2["open"], high=k2["high"],
+                       low=k2["low"], close=k2["close"], volume=k2["volume"])
+                for k2 in klines
+            ]
+
             sym_combo = []
             for idx, combo in enumerate(combos):
                 fc = FC(cfg_module)
                 for k, v in zip(keys, combo): setattr(fc, k, v)
-                det, trades = SpikeDetector(fc), []
+                det = SpikeDetector(fc)
+                trades = []
                 for i in range(fc.ATR_PERIOD + 1, len(klines)):
+                    # 只在有新 K 线时更新（增量更新）
                     det.update(klines[max(0, i-200):i])
-                    k2 = klines[i]
-                    c  = Candle(open_time=k2["open_time"], open=k2["open"], high=k2["high"],
-                                low=k2["low"], close=k2["close"], volume=k2["volume"])
-                    sig = det.detect(c)
+                    sig = det.detect(candle_objs[i])
                     if sig:
                         future = klines[i+1:i+1+fc.MAX_HOLD_SECONDS]
                         pnl = _sim(sig, future)
                         trades.append(pnl)
                         combo_trades[idx].append(pnl)
                 STATE["grid_progress"] += 1
-                if idx % 5 == 0: await asyncio.sleep(0)
+                if idx % 3 == 0: await asyncio.sleep(0)
                 if len(trades) >= 3:
                     m = _calc_metrics(trades)
                     sym_combo.append({"score": m.get(target, 0), "p": dict(zip(keys, combo)), "m": m})

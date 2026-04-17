@@ -1,6 +1,19 @@
 """
 插针检测引擎
 核心逻辑：识别1秒K线插针 + 胜率过滤
+
+TP/SL 计算规则（已修复）：
+  BUY (下插针):
+    entry  = candle.close
+    tp     = spike_root + atr * 0.2        # 超过针根一点点，确保 tp > entry
+             (若 tp <= entry 则 tp = entry + wick * 0.15，兜底)
+    sl     = spike_tip - wick * SL_RATIO   # 针尖下方
+
+  SELL (上插针):
+    entry  = candle.close
+    tp     = spike_root - atr * 0.2        # 低于针根，确保 tp < entry
+             (若 tp >= entry 则 tp = entry - wick * 0.15，兜底)
+    sl     = spike_tip + wick * SL_RATIO   # 针尖上方
 """
 import logging
 from dataclasses import dataclass, field
@@ -40,16 +53,16 @@ class Candle:
 
 @dataclass
 class SpikeSignal:
-    direction: str          # "BUY" | "SELL"
-    entry_price: float      # 建议入场价
-    take_profit: float      # 止盈价
-    stop_loss: float        # 止损价
-    spike_tip: float        # 针尖价格
-    spike_root: float       # 针根价格（回归目标）
-    spike_length: float     # 针的绝对长度
+    direction: str
+    entry_price: float
+    take_profit: float
+    stop_loss: float
+    spike_tip: float
+    spike_root: float
+    spike_length: float
     atr: float
-    recovery_pct: float     # 当前K线已回归的百分比
-    score: float            # 综合评分 0-100
+    recovery_pct: float
+    score: float
     candle: Candle = None
 
 
@@ -60,9 +73,7 @@ class SpikeDetector:
         self._atr_cache: float = 0.0
 
     def update(self, klines: list[dict]):
-        """用新K线数据更新内部缓存"""
         new_times = {c.open_time for c in self.candles}
-        added = 0
         for k in klines:
             if k["open_time"] not in new_times:
                 self.candles.append(Candle(
@@ -71,12 +82,9 @@ class SpikeDetector:
                     low=k["low"],   close=k["close"],
                     volume=k["volume"],
                 ))
-                added += 1
-        if added:
-            self._atr_cache = self._calc_atr()
+        self._atr_cache = self._calc_atr()
 
     def _calc_atr(self) -> float:
-        """True Range的简单均值（用收盘-开盘近似，避免需要前一根收盘）"""
         candles = list(self.candles)
         if len(candles) < 5:
             return 0.0
@@ -92,42 +100,54 @@ class SpikeDetector:
         return float(np.mean(closes))
 
     def detect(self, candle: Candle) -> Optional[SpikeSignal]:
-        """
-        对最新一根K线判断是否出现插针信号
-        返回 SpikeSignal 或 None
-        """
         atr = self._atr_cache
         if atr == 0:
             return None
 
-        # ── 下插针 → 做多 ────────────────────────────────────
+        # MIN_SPIKE_PIPS: 相对于价格的比例 (e.g. 0.00005 = 0.005%)
+        min_abs = (candle.close * self.cfg.MIN_SPIKE_PIPS
+                   if self.cfg.MIN_SPIKE_PIPS < 0.01
+                   else self.cfg.MIN_SPIKE_PIPS)
+
+        # ── 下插针 → BUY ─────────────────────────────────────
         lower = candle.lower_wick
-        # MIN_SPIKE_PIPS 作为价格的相对比例（例如 0.00005 = 0.005%），更适合不同价格的币
-        min_abs = candle.close * self.cfg.MIN_SPIKE_PIPS if self.cfg.MIN_SPIKE_PIPS < 0.01 else self.cfg.MIN_SPIKE_PIPS
         if lower >= min_abs:
-            body  = max(candle.body, candle.range * 0.01)  # 防止体为0
+            body       = max(candle.body, candle.range * 0.01)
             ratio_body = lower / body
             ratio_atr  = lower / atr
 
             if ratio_body >= self.cfg.SPIKE_RATIO and ratio_atr >= self.cfg.SPIKE_VS_ATR:
-                spike_root  = min(candle.open, candle.close)
-                spike_tip   = candle.low
-                recovery    = (candle.close - spike_tip) / lower
+                spike_tip  = candle.low
+                spike_root = min(candle.open, candle.close)
+                recovery   = (candle.close - spike_tip) / lower
+
                 if recovery >= self.cfg.RECOVERY_RATIO:
+                    entry = candle.close
+
+                    # TP: 目标是回到 spike_root 再往上一点
+                    # 确保 tp > entry（否则交易没有意义）
+                    tp = spike_root + atr * 0.1
+                    if tp <= entry:
+                        # 兜底：entry 上方 wick*15% 处
+                        tp = entry + lower * 0.15
+
+                    # SL: 针尖下方
+                    sl = spike_tip - lower * self.cfg.SL_RATIO
+
+                    # 验证：tp > entry > spike_tip > sl
+                    if not (tp > entry > spike_tip >= sl):
+                        logger.debug(
+                            f"BUY geometry invalid: tp={tp:.6f} entry={entry:.6f} "
+                            f"tip={spike_tip:.6f} sl={sl:.6f}, skip"
+                        )
+                        return None
+
                     score = self._score(candle, "BUY", ratio_body, ratio_atr,
                                         recovery, candle.volume)
-                    tp = spike_root + (spike_root - spike_tip) * (self.cfg.TP_RATIO - 1)
-                    # 实际止盈：回到针根部附近
-                    tp = spike_tip + lower * self.cfg.TP_RATIO
-                    sl = spike_tip - lower * self.cfg.SL_RATIO
-                    entry = candle.close  # 下根K线开盘附近
 
-                    # 趋势过滤：MA99 在价格下方才做多
                     if self.cfg.TREND_FILTER:
                         ma = self._calc_ma(self.cfg.MA_PERIOD)
-                        if ma > candle.close * 1.005:  # MA远在上方 → 空头环境，下插针胜率低
-                            logger.debug(f"BUY filtered by trend: ma={ma:.6f} > close={candle.close:.6f}")
-                            # 不过滤，但降低评分
+                        if ma > candle.close * 1.005:
                             score *= 0.7
 
                     return SpikeSignal(
@@ -144,24 +164,43 @@ class SpikeDetector:
                         candle=candle,
                     )
 
-        # ── 上插针 → 做空（现货卖出持仓）────────────────────────
+        # ── 上插针 → SELL ────────────────────────────────────
         upper = candle.upper_wick
-        min_abs2 = candle.close * self.cfg.MIN_SPIKE_PIPS if self.cfg.MIN_SPIKE_PIPS < 0.01 else self.cfg.MIN_SPIKE_PIPS
+        min_abs2 = (candle.close * self.cfg.MIN_SPIKE_PIPS
+                    if self.cfg.MIN_SPIKE_PIPS < 0.01
+                    else self.cfg.MIN_SPIKE_PIPS)
         if upper >= min_abs2:
-            body  = max(candle.body, candle.range * 0.01)
+            body       = max(candle.body, candle.range * 0.01)
             ratio_body = upper / body
             ratio_atr  = upper / atr
 
             if ratio_body >= self.cfg.SPIKE_RATIO and ratio_atr >= self.cfg.SPIKE_VS_ATR:
-                spike_root = max(candle.open, candle.close)
                 spike_tip  = candle.high
+                spike_root = max(candle.open, candle.close)
                 recovery   = (spike_tip - candle.close) / upper
+
                 if recovery >= self.cfg.RECOVERY_RATIO:
+                    entry = candle.close
+
+                    # TP: 目标是回到 spike_root 再往下一点
+                    # 确保 tp < entry
+                    tp = spike_root - atr * 0.1
+                    if tp >= entry:
+                        tp = entry - upper * 0.15
+
+                    # SL: 针尖上方
+                    sl = spike_tip + upper * self.cfg.SL_RATIO
+
+                    # 验证：sl > spike_tip > entry > tp
+                    if not (sl >= spike_tip >= entry >= tp):
+                        logger.debug(
+                            f"SELL geometry invalid: sl={sl:.6f} tip={spike_tip:.6f} "
+                            f"entry={entry:.6f} tp={tp:.6f}, skip"
+                        )
+                        return None
+
                     score = self._score(candle, "SELL", ratio_body, ratio_atr,
                                         recovery, candle.volume)
-                    tp    = spike_tip - upper * self.cfg.TP_RATIO
-                    sl    = spike_tip + upper * self.cfg.SL_RATIO
-                    entry = candle.close
 
                     return SpikeSignal(
                         direction="SELL",
@@ -179,26 +218,12 @@ class SpikeDetector:
 
         return None
 
-    def _score(
-        self, candle: Candle, direction: str,
-        ratio_body: float, ratio_atr: float,
-        recovery: float, volume: float
-    ) -> float:
-        """
-        综合评分 0-100：
-        - 针/实体比      (30分)
-        - 针/ATR比       (25分)
-        - 已回归比例     (25分)
-        - 成交量突增     (20分)
-        """
+    def _score(self, candle, direction, ratio_body, ratio_atr, recovery, volume):
         s_body     = min(ratio_body / (self.cfg.SPIKE_RATIO * 3), 1.0) * 30
         s_atr      = min(ratio_atr  / (self.cfg.SPIKE_VS_ATR * 2), 1.0) * 25
         s_recovery = min(recovery   / 0.9, 1.0) * 25
-
-        # 成交量：与近20根均量比较
         recent_vols = [c.volume for c in list(self.candles)[-20:]]
         avg_vol = float(np.mean(recent_vols)) if recent_vols else 1.0
         vol_ratio = volume / avg_vol if avg_vol > 0 else 1.0
         s_vol = min(vol_ratio / 5.0, 1.0) * 20
-
         return round(s_body + s_atr + s_recovery + s_vol, 1)
