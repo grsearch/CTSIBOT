@@ -603,7 +603,7 @@ function renderGrid(d){
           +'<td class="'+(r.m.expectancy>0?'gr':'rd')+'">'+r.m.expectancy.toFixed(5)+'</td>'
           +'<td>'+r.m.sharpe.toFixed(3)+'</td>'
           +'<td class="'+(r.m.total_pnl>0?'gr':'rd')+'">'+r.m.total_pnl.toFixed(4)+'</td>'
-          +'<td><button style="padding:2px 8px;font-size:9px" onclick="applySymRow(\''+sym+'\','+i+')">应用</button></td></tr>';
+          +'<td><button style="padding:2px 8px;font-size:9px" data-sym="'+sym+'" data-idx="'+i+'" onclick="applySymRowBtn(this)">应用</button></td></tr>';
       }).join('');
       html+='<div class="card" style="margin-top:0"><div class="ch"><span class="am">'+sym+'</span>'
         +'<span style="font-weight:400;color:var(--mt);font-size:10px;margin-left:6px">Top 5</span></div>'
@@ -617,6 +617,11 @@ function renderGrid(d){
 }
 function applyBest(){ if(_D.grid_best) applyGridP(_D.grid_best); }
 function applyRow(i){ if(_D.grid_results&&_D.grid_results[i]) applyGridP(_D.grid_results[i].p); }
+function applySymRowBtn(btn){
+  var sym=btn.getAttribute('data-sym');
+  var i=parseInt(btn.getAttribute('data-idx'));
+  applySymRow(sym,i);
+}
 function applySymRow(sym,i){
   if(_D.grid_sym_results&&_D.grid_sym_results[sym]&&_D.grid_sym_results[sym][i])
     applyGridP(_D.grid_sym_results[sym][i].p);

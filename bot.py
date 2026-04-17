@@ -1,6 +1,5 @@
 """
 主交易循环 - 多币种版本
-每个币种独立的检测器 + 仓位管理，共享风控和交易所连接
 """
 import asyncio
 import logging
@@ -17,34 +16,48 @@ from strategy.risk_manager import RiskManager
 
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────────────────────
-# 全局状态（dashboard 直接读这个 dict）
-# ─────────────────────────────────────────────────────────────
 STATE = {
     "running":          False,
-    "diag":             {},  # 实时诊断数据
     "dry_run":          False,
     "scan_mode":        "single",
-    "symbols_active":   [],          # 当前扫描的币种列表
-    "prices":           {},          # {symbol: price}
+    "symbols_active":   [],
+    "prices":           {},
     "last_tick":        0,
     "signals_found":    0,
     "signals_blocked":  0,
-    "detectors":        {},          # {symbol: SpikeDetector}
-    "positions":        None,        # 全局 PositionManager
-    "risk":             None,        # RiskManager
+    "detectors":        {},
+    "positions":        None,
+    "risk":             None,
     "errors":           [],
+    "diag":             {},
     # 网格搜索状态
     "grid_running":     False,
     "grid_progress":    0,
     "grid_total":       0,
     "grid_results":     [],
     "grid_best":        None,
-    # 实时参数（可从 dashboard 热更新）
+    "grid_sym_results": {},
+    "grid_log":         [],
+    # 实时参数快照
     "live_config":      {},
 }
 
-BALANCE_UPDATE_INTERVAL = 30   # 每多少 tick 刷新一次余额
+BALANCE_UPDATE_INTERVAL = 30
+
+
+def _snapshot_config() -> dict:
+    keys = [
+        "SCAN_MODE", "SYMBOL", "SYMBOL_LIST",
+        "SPIKE_RATIO", "SPIKE_VS_ATR", "ATR_PERIOD", "RECOVERY_RATIO", "MIN_SPIKE_PIPS",
+        "ORDER_USDT", "MAX_OPEN_ORDERS",
+        "TP_RATIO", "SL_RATIO", "MAX_HOLD_SECONDS",
+        "MA_PERIOD", "TREND_FILTER", "POLL_INTERVAL_MS",
+        "DAILY_LOSS_LIMIT_USDT", "MAX_DRAWDOWN_PCT",
+        "MAX_CONSECUTIVE_LOSSES", "MAX_DAILY_TRADES",
+        "AUTO_MIN_GAIN_PCT", "AUTO_MIN_VOLUME_USDT", "AUTO_MAX_SYMBOLS", "AUTO_REFRESH_SEC",
+        "DRY_RUN",
+    ]
+    return {k: getattr(cfg_module, k, None) for k in keys}
 
 
 class SymbolWorker:
@@ -73,7 +86,6 @@ class SymbolWorker:
         price  = latest["close"]
         STATE["prices"][self.symbol] = price
 
-        # 避免重复处理同一根K线
         if latest["open_time"] == self._last_candle_time:
             await self._monitor(price)
             return
@@ -86,24 +98,24 @@ class SymbolWorker:
             volume=latest["volume"],
         )
 
-        # 更新诊断数据（供 dashboard 显示为什么没触发）
+        # 诊断数据（用最近处理的币更新）
         atr   = self.detector._atr_cache
         lower = candle.lower_wick
         upper = candle.upper_wick
         body  = max(candle.body, candle.range * 0.01)
         STATE["diag"] = {
-            "symbol":        self.symbol,
-            "last_open":     candle.open,
-            "last_high":     candle.high,
-            "last_low":      candle.low,
-            "last_close":    candle.close,
-            "lower_wick":    lower,
-            "upper_wick":    upper,
-            "body":          body,
-            "atr":           atr,
-            "ratio_body":    max(lower, upper) / body if body > 0 else 0,
-            "ratio_atr":     max(lower, upper) / atr  if atr  > 0 else 0,
-            "recovery":      (candle.close - candle.low) / lower if lower > 0 else 0,
+            "symbol":          self.symbol,
+            "last_open":       candle.open,
+            "last_high":       candle.high,
+            "last_low":        candle.low,
+            "last_close":      candle.close,
+            "lower_wick":      lower,
+            "upper_wick":      upper,
+            "body":            body,
+            "atr":             atr,
+            "ratio_body":      max(lower, upper) / body if body > 0 else 0,
+            "ratio_atr":       max(lower, upper) / atr  if atr  > 0 else 0,
+            "recovery":        (candle.close - candle.low) / lower if lower > 0 else 0,
             "cfg_spike_ratio": cfg_module.SPIKE_RATIO,
             "cfg_spike_atr":   cfg_module.SPIKE_VS_ATR,
             "cfg_recovery":    cfg_module.RECOVERY_RATIO,
@@ -119,11 +131,10 @@ class SymbolWorker:
                 f"tp={signal.take_profit:.6f} sl={signal.stop_loss:.6f}"
             )
             can_trade, reason = self.rm.can_trade()
-            if can_trade and not STATE["dry_run"]:
+            if STATE["dry_run"]:
+                logger.info(f"[DRY-RUN] 信号: {self.symbol} {signal.direction} score={signal.score}")
+            elif can_trade:
                 await self.pm.try_open(signal, self.symbol)
-            elif STATE["dry_run"]:
-                logger.info(f"[DRY-RUN] 信号被空跑模式跳过: {self.symbol} {signal.direction}")
-                STATE["signals_found"] += 0  # 仍计数但不下单
             else:
                 STATE["signals_blocked"] += 1
                 logger.warning(f"[{self.symbol}] 风控拦截: {reason}")
@@ -146,18 +157,17 @@ class TradingBot:
         self.rm      = RiskManager(cfg_module)
         self.scanner = SymbolScanner(self.ex, cfg_module)
         self._workers: Dict[str, SymbolWorker] = {}
-        self._running     = False
-        self._tick_count  = 0
+        self._running    = False
+        self._tick_count = 0
 
-        STATE["positions"] = self.pm
-        STATE["risk"]      = self.rm
-        STATE["dry_run"]   = getattr(cfg_module, "DRY_RUN", False)
-        STATE["scan_mode"] = getattr(cfg_module, "SCAN_MODE", "single")
+        STATE["positions"]   = self.pm
+        STATE["risk"]        = self.rm
+        STATE["dry_run"]     = getattr(cfg_module, "DRY_RUN", False)
+        STATE["scan_mode"]   = getattr(cfg_module, "SCAN_MODE", "single")
         STATE["live_config"] = _snapshot_config()
-            STATE["scan_mode"] = getattr(cfg_module, "SCAN_MODE", "single")
 
     async def start(self):
-        logger.info("=== Spike Bot Starting (multi-symbol) ===")
+        logger.info("=== Spike Bot Starting ===")
         await self.pm.init_filters()
 
         try:
@@ -190,7 +200,6 @@ class TradingBot:
     async def _tick(self):
         self._tick_count += 1
 
-        # 定期刷新余额
         if self._tick_count % BALANCE_UPDATE_INTERVAL == 0:
             try:
                 bal = await self.ex.get_asset_balance(cfg_module.QUOTE_ASSET)
@@ -198,18 +207,16 @@ class TradingBot:
             except Exception:
                 pass
 
-        # 获取当前要扫描的币种列表
         symbols = await self.scanner.get_symbols()
         STATE["symbols_active"] = symbols
         STATE["last_tick"]      = int(time.time())
+        STATE["scan_mode"]      = getattr(cfg_module, "SCAN_MODE", "single")
 
-        # 为新币种创建 worker
         for sym in symbols:
             if sym not in self._workers:
                 logger.info(f"添加币种: {sym}")
                 self._workers[sym] = SymbolWorker(sym, self.ex, self.pm, self.rm)
 
-        # 移除不再需要的 worker
         for sym in list(self._workers.keys()):
             if sym not in symbols:
                 logger.info(f"移除币种: {sym}")
@@ -217,7 +224,6 @@ class TradingBot:
                 STATE["detectors"].pop(sym, None)
                 STATE["prices"].pop(sym, None)
 
-        # 并发轮询所有币种（最多5个并发，避免触发限速）
         batch_size = 5
         sym_list   = list(self._workers.keys())
         for i in range(0, len(sym_list), batch_size):
@@ -227,7 +233,7 @@ class TradingBot:
                 return_exceptions=True
             )
             if i + batch_size < len(sym_list):
-                await asyncio.sleep(0.1)  # 批次间小停顿
+                await asyncio.sleep(0.1)
 
     def stop(self):
         self._running    = False
@@ -235,9 +241,8 @@ class TradingBot:
         logger.info("Bot stopped")
 
     def apply_live_config(self, updates: dict):
-        """Dashboard 热更新参数（不重启）"""
         allowed = {
-            "SPIKE_RATIO", "SPIKE_VS_ATR", "RECOVERY_RATIO",
+            "SPIKE_RATIO", "SPIKE_VS_ATR", "RECOVERY_RATIO", "MIN_SPIKE_PIPS",
             "TP_RATIO", "SL_RATIO", "MAX_HOLD_SECONDS",
             "ORDER_USDT", "MAX_OPEN_ORDERS", "TREND_FILTER",
             "DAILY_LOSS_LIMIT_USDT", "MAX_DRAWDOWN_PCT", "MAX_CONSECUTIVE_LOSSES",
@@ -252,30 +257,14 @@ class TradingBot:
         if changed:
             logger.info(f"参数热更新: {', '.join(changed)}")
             STATE["live_config"] = _snapshot_config()
-            STATE["scan_mode"] = getattr(cfg_module, "SCAN_MODE", "single")
-            # 重建所有检测器以应用新参数
+            STATE["scan_mode"]   = getattr(cfg_module, "SCAN_MODE", "single")
             for sym, worker in self._workers.items():
                 worker.detector = SpikeDetector(cfg_module)
                 STATE["detectors"][sym] = worker.detector
         return changed
 
 
-def _snapshot_config() -> dict:
-    keys = [
-        "SCAN_MODE","SYMBOL","SYMBOL_LIST",
-        "SPIKE_RATIO","SPIKE_VS_ATR","ATR_PERIOD","RECOVERY_RATIO","MIN_SPIKE_PIPS",
-        "ORDER_USDT","MAX_OPEN_ORDERS",
-        "TP_RATIO","SL_RATIO","MAX_HOLD_SECONDS",
-        "MA_PERIOD","TREND_FILTER",
-        "POLL_INTERVAL_MS",
-        "DAILY_LOSS_LIMIT_USDT","MAX_DRAWDOWN_PCT",
-        "MAX_CONSECUTIVE_LOSSES","MAX_DAILY_TRADES",
-        "DRY_RUN",
-    ]
-    return {k: getattr(cfg_module, k, None) for k in keys}
-
-
-# 全局 bot 实例（dashboard 调用热更新用）
+# 全局实例供 dashboard 调用
 _bot_instance: TradingBot = None
 
 
@@ -286,22 +275,3 @@ async def run():
         await _bot_instance.start()
     finally:
         await _bot_instance.ex.close()
-
-# patch _snapshot_config to include auto params
-_orig_snapshot = _snapshot_config
-def _snapshot_config():
-    d = {}
-    keys = [
-        "SCAN_MODE","SYMBOL","SYMBOL_LIST",
-        "SPIKE_RATIO","SPIKE_VS_ATR","ATR_PERIOD","RECOVERY_RATIO","MIN_SPIKE_PIPS",
-        "ORDER_USDT","MAX_OPEN_ORDERS",
-        "TP_RATIO","SL_RATIO","MAX_HOLD_SECONDS",
-        "MA_PERIOD","TREND_FILTER","POLL_INTERVAL_MS",
-        "DAILY_LOSS_LIMIT_USDT","MAX_DRAWDOWN_PCT",
-        "MAX_CONSECUTIVE_LOSSES","MAX_DAILY_TRADES",
-        "AUTO_MIN_GAIN_PCT","AUTO_MIN_VOLUME_USDT","AUTO_MAX_SYMBOLS","AUTO_REFRESH_SEC",
-        "DRY_RUN",
-    ]
-    for k in keys:
-        d[k] = getattr(cfg_module, k, None)
-    return d
