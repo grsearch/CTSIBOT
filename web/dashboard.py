@@ -250,16 +250,16 @@ _TAB_GRID = """
     </div>
     <div class="fr">
       <div class="field"><label>SPIKE_VS_ATR 针/ATR倍数</label>
-        <input type="text" id="g_atr" value="1.0,1.5,2.0,2.5"><span class="hint">针长 ÷ ATR(20)</span></div>
+        <input type="text" id="g_atr" value="2.0,2.5,3.0,4.0"><span class="hint">只抓大针，质量优先</span></div>
       <div class="field"><label>MIN_RECOVERY 最小回归%</label>
-        <input type="text" id="g_min_rec" value="0.10,0.15,0.20">
-        <span class="hint">15%=确认反转，越低入场越早R:R越好</span></div>
+        <input type="text" id="g_min_rec" value="0.20,0.25,0.30">
+        <span class="hint">越低入场越早R:R越好，但噪音多</span></div>
       <div class="field"><label>MAX_RECOVERY 最大回归%</label>
-        <input type="text" id="g_max_rec" value="0.30,0.40,0.50">
-        <span class="hint">40%时R:R≈1.2，30%时R:R≈1.75</span></div>
+        <input type="text" id="g_max_rec" value="0.35,0.40,0.45">
+        <span class="hint">40%时R:R≈1.2，超过45%亏损</span></div>
       <div class="field"><label>TP_RATIO 止盈比</label>
-        <input type="text" id="g_tp" value="0.80,1.00,1.20">
-        <span class="hint">1.0=到达针根(开盘价)，>1.0=超过针根</span></div>
+        <input type="text" id="g_tp" value="0.85,1.00,1.15">
+        <span class="hint">1.0=到达针根，>1.0更激进</span></div>
       <div class="field"><label>SL_RATIO</label>
         <input type="text" id="g_sl" value="0.08,0.12"></div>
       <div class="field"><label>SL_ATR_MULT</label>
@@ -300,7 +300,7 @@ _TAB_GRID = """
     <div style="overflow-x:auto">
     <table><thead><tr>
       <th>#</th><th>ATR</th><th>MinRec</th><th>MaxRec</th><th>TP</th><th>SL</th><th>SL-ATR</th><th>HOLD</th>
-      <th>笔数</th><th>胜率</th><th>期望值</th><th>R:R</th><th>PnL</th><th>覆盖币</th><th></th>
+      <th>笔数</th><th>胜率</th><th>R:R</th><th>毛PnL</th><th>净胜率</th><th>净PnL</th><th>覆盖币</th><th></th>
     </tr></thead><tbody id="gAggTb"></tbody></table></div>
   </div>
   <div id="gSymCards"></div>
@@ -569,9 +569,10 @@ function renderGrid(d){
         +'<td>'+r.p.MAX_HOLD_SECONDS+'</td>'
         +'<td>'+r.m.n+'</td>'
         +'<td class="'+(r.m.win_rate>=55?'gr':'rd')+'">'+r.m.win_rate+'%</td>'
-        +'<td class="'+(r.m.expectancy>0?'gr':'rd')+'">'+r.m.expectancy.toFixed(5)+'</td>'
         +'<td class="bl">'+(r.m.avg_rr||'—')+'</td>'
         +'<td class="'+(r.m.total_pnl>0?'gr':'rd')+'">'+r.m.total_pnl.toFixed(4)+'</td>'
+        +'<td class="'+((r.m.net_win_rate||0)>=50?'gr':'rd')+'">'+(r.m.net_win_rate!=null?r.m.net_win_rate+'%':'—')+'</td>'
+        +'<td class="'+((r.m.net_total_pnl||0)>0?'gr':'rd')+'" style="font-weight:700">'+(r.m.net_total_pnl!=null?r.m.net_total_pnl.toFixed(4):'—')+'</td>'
         +'<td class="am">'+(r.m.symbols_covered||'—')+'</td>'
         +'<td><button style="padding:2px 8px;font-size:9px" onclick="applyRow('+i+')">应用</button></td></tr>';
     }).join('');
@@ -589,15 +590,15 @@ function renderGrid(d){
           +'<td>'+r.p.MAX_HOLD_SECONDS+'</td>'
           +'<td>'+r.m.n+'</td>'
           +'<td class="'+(r.m.win_rate>=55?'gr':'rd')+'">'+r.m.win_rate+'%</td>'
-          +'<td class="'+(r.m.expectancy>0?'gr':'rd')+'">'+r.m.expectancy.toFixed(5)+'</td>'
-          +'<td>'+r.m.total_pnl.toFixed(4)+'</td>'
+          +'<td class="'+(r.m.total_pnl>0?'gr':'rd')+'">'+r.m.total_pnl.toFixed(4)+'</td>'
+          +'<td class="'+((r.m.net_total_pnl||0)>0?'gr':'rd')+'" style="font-weight:700">'+(r.m.net_total_pnl!=null?r.m.net_total_pnl.toFixed(4):'—')+'</td>'
           +'<td><button style="padding:2px 8px;font-size:9px" data-sym="'+sym+'" data-idx="'+i+'" onclick="applySymRowBtn(this)">应用</button></td></tr>';
       }).join('');
       html+='<div class="card" style="margin-top:0"><div class="ch"><span class="am">'+sym+'</span>'
         +'<span style="font-weight:400;color:var(--mt);font-size:10px;margin-left:6px">Top 5</span></div>'
         +'<div style="overflow-x:auto"><table><thead><tr>'
         +'<th>#</th><th>ATR</th><th>MinRec</th><th>MaxRec</th><th>TP</th><th>SL</th><th>SL-ATR</th><th>HOLD</th>'
-        +'<th>N</th><th>胜率</th><th>期望值</th><th>PnL</th><th></th>'
+        +'<th>N</th><th>胜率</th><th>毛PnL</th><th>净PnL</th><th></th>'
         +'</tr></thead><tbody>'+rows+'</tbody></table></div></div>';
     });
     document.getElementById('gSymCards').innerHTML=html;
@@ -857,6 +858,7 @@ async def _run_grid_search(params:dict):
         log(str(len(combos))+" 种参数 × "+str(len(symbols))+" 个币 = "+str(STATE["grid_total"])+" 次评估")
         ex=BinanceREST(cfg_module.API_KEY,cfg_module.API_SECRET,cfg_module.BASE_URL)
         combo_trades={i:[] for i in range(len(combos))}
+        combo_net_trades={i:[] for i in range(len(combos))}
         sym_results_all={}
         ATR_P=20; MP=getattr(cfg_module,"MIN_SPIKE_PIPS",0.00005)
         for si,symbol in enumerate(symbols):
@@ -886,7 +888,7 @@ async def _run_grid_search(params:dict):
             sym_combo=[]
             for idx,combo in enumerate(combos):
                 SATR,MIN_REC,MAX_REC,TP_R,SL_R,SL_ATR_M,HOLD=combo
-                trades=[]; MIN_RR=getattr(cfg_module,"MIN_RR",1.5)
+                trades=[]; net_trades=[]; MIN_RR=getattr(cfg_module,"MIN_RR",1.5)
                 for i in range(ATR_P+1,N):
                     a=atr[i];
                     if a==0: continue
@@ -903,7 +905,11 @@ async def _run_grid_search(params:dict):
                                 if sd>0 and td/sd>=MIN_RR:
                                     future=klines[i+1:i+1+int(HOLD)]
                                     pnl=_sim_fast("BUY",entry,tp,sl,future)
-                                    trades.append(pnl); combo_trades[idx].append(pnl)
+                                    fee_rate=getattr(cfg_module,"FEE_RATE",0.001)
+                                    net=pnl - entry*fee_rate*2
+                                    trades.append(pnl); net_trades.append(net)
+                                    combo_trades[idx].append(pnl)
+                                    combo_net_trades[idx].append(net)
                     spike_rise=highs[i]-opens[i]
                     if spike_rise > a*SATR:
                         rec=(highs[i]-closes[i])/spike_rise
@@ -916,11 +922,15 @@ async def _run_grid_search(params:dict):
                                 if sd>0 and td/sd>=MIN_RR:
                                     future=klines[i+1:i+1+int(HOLD)]
                                     pnl=_sim_fast("SELL",entry,tp,sl,future)
-                                    trades.append(pnl); combo_trades[idx].append(pnl)
+                                    fee_rate=getattr(cfg_module,"FEE_RATE",0.001)
+                                    net=pnl - entry*fee_rate*2
+                                    trades.append(pnl); net_trades.append(net)
+                                    combo_trades[idx].append(pnl)
+                                    combo_net_trades[idx].append(net)
                 STATE["grid_progress"]+=1
                 if idx%5==0: await asyncio.sleep(0)
                 if len(trades)>=3:
-                    m=_calc_metrics(trades)
+                    m=_calc_metrics(trades, net_trades)
                     sym_combo.append({"score":m.get(target,0),"p":dict(zip(keys,combo)),"m":m})
             sym_combo.sort(key=lambda x:x["score"],reverse=True)
             sym_results_all[symbol]=sym_combo[:10]
@@ -931,8 +941,9 @@ async def _run_grid_search(params:dict):
         agg=[]
         for idx,combo in enumerate(combos):
             t=combo_trades[idx]
+            nt=combo_net_trades[idx]
             if len(t)<3: continue
-            m=_calc_metrics(t)
+            m=_calc_metrics(t, nt)
             m["symbols_covered"]=sum(1 for sr in sym_results_all.values()
                 if any(all(r["p"].get(k)==v for k,v in zip(keys,combo)) for r in sr))
             agg.append({"score":m.get(target,0),"p":dict(zip(keys,combo)),"m":m})
@@ -944,6 +955,7 @@ async def _run_grid_search(params:dict):
     finally: STATE["grid_running"]=False
 
 def _sim_fast(direction,entry,tp,sl,future):
+    # 返回价差（不含手续费）
     for k in future:
         hi,lo=k["high"],k["low"]
         if direction=="BUY":
@@ -955,7 +967,15 @@ def _sim_fast(direction,entry,tp,sl,future):
     ep=future[-1]["close"] if future else entry
     return (ep-entry) if direction=="BUY" else (entry-ep)
 
-def _calc_metrics(trades):
+
+def _sim_fast_with_fee(direction, entry, tp, sl, future, fee_rate):
+    # 返回净PnL比例（扣除开+平两笔手续费）
+    gross = _sim_fast(direction, entry, tp, sl, future)
+    # 双边手续费按入场价近似计算
+    fee = entry * fee_rate * 2
+    return gross - fee
+
+def _calc_metrics(trades, net_trades=None):
     n=len(trades); wins=sum(1 for p in trades if p>0)
     wr=wins/n*100; total=sum(trades)
     aw=sum(p for p in trades if p>0)/max(wins,1)
@@ -964,8 +984,18 @@ def _calc_metrics(trades):
     std=statistics.stdev(trades) if n>1 else 1e-9
     sh=(total/n)/std if std>0 else 0
     avg_rr=round(aw/al,2) if al>0 else 0
-    return {"n":n,"win_rate":round(wr,1),"total_pnl":round(total,5),
+    result = {"n":n,"win_rate":round(wr,1),"total_pnl":round(total,5),
             "expectancy":round(ex,6),"sharpe":round(sh,3),"avg_rr":avg_rr}
+    # 如果提供了扣除手续费后的交易，额外计算净利润指标
+    if net_trades is not None:
+        nwins = sum(1 for p in net_trades if p > 0)
+        nwr   = nwins / n * 100
+        ntotal= sum(net_trades)
+        nex   = ntotal / n
+        result["net_win_rate"] = round(nwr, 1)
+        result["net_total_pnl"] = round(ntotal, 5)
+        result["net_expectancy"] = round(nex, 6)
+    return result
 
 async def run_web():
     app=web.Application()
