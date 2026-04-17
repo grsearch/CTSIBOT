@@ -196,7 +196,7 @@ _TAB_PARAMS = """
         <span class="hint">已回归≥此值才触发（确认反转）</span></div>
       <div class="field"><label>MAX_RECOVERY 最大已回归</label>
         <input type="number" id="p_MAX_RECOVERY" step="0.05" min="0.1" max="1.0">
-        <span class="hint">已回归≤此值才触发（保留空间）</span></div>
+        <span class="hint">建议0.3~0.5，越小R:R越好但信号越少</span></div>
     </div>
   </div>
   <div class="card"><div class="ch">止盈止损</div>
@@ -256,12 +256,15 @@ _TAB_GRID = """
         <input type="text" id="g_sr" value="2.0,2.5,3.0"><span class="hint">逗号分隔</span></div>
       <div class="field"><label>SPIKE_VS_ATR</label>
         <input type="text" id="g_atr" value="1.0,1.5,2.0"></div>
-      <div class="field"><label>MIN_RECOVERY</label>
-        <input type="text" id="g_min_rec" value="0.15,0.20,0.30"></div>
-      <div class="field"><label>MAX_RECOVERY</label>
-        <input type="text" id="g_max_rec" value="0.60,0.75"></div>
-      <div class="field"><label>TP_RATIO</label>
-        <input type="text" id="g_tp" value="0.65,0.75,0.85"></div>
+      <div class="field"><label>MIN_RECOVERY 最小回归%</label>
+        <input type="text" id="g_min_rec" value="0.10,0.15,0.20">
+        <span class="hint">15%=确认反转，越低入场越早R:R越好</span></div>
+      <div class="field"><label>MAX_RECOVERY 最大回归%</label>
+        <input type="text" id="g_max_rec" value="0.30,0.40,0.50">
+        <span class="hint">40%时R:R≈1.2，30%时R:R≈1.75</span></div>
+      <div class="field"><label>TP_RATIO 止盈比</label>
+        <input type="text" id="g_tp" value="0.80,1.00,1.20">
+        <span class="hint">1.0=到达针根(开盘价)，>1.0=超过针根</span></div>
       <div class="field"><label>SL_RATIO</label>
         <input type="text" id="g_sl" value="0.08,0.12"></div>
       <div class="field"><label>SL_ATR_MULT</label>
@@ -898,7 +901,8 @@ async def _run_grid_search(params:dict):
                     if lower>=mn and lower/bodies[i]>=SR and lower/a>=SATR:
                         tip=lows[i]; entry=closes[i]; rec=(entry-tip)/lower
                         if MIN_REC<=rec<=MAX_REC:
-                            tp=tip+lower*TP_R
+                            root=min(opens[i],closes[i])
+                            tp=(entry+(root-entry)*TP_R if root>entry else entry+a*TP_R*0.3)
                             sl=min(tip-lower*SL_R, tip-a*SL_ATR_M)
                             if tp>entry and sl<tip:
                                 td=tp-entry; sd=entry-sl
@@ -910,7 +914,8 @@ async def _run_grid_search(params:dict):
                     if upper>=mn and upper/bodies[i]>=SR and upper/a>=SATR:
                         tip=highs[i]; entry=closes[i]; rec=(tip-entry)/upper
                         if MIN_REC<=rec<=MAX_REC:
-                            tp=tip-upper*TP_R
+                            root=max(opens[i],closes[i])
+                            tp=(entry-(entry-root)*TP_R if root<entry else entry-a*TP_R*0.3)
                             sl=max(tip+upper*SL_R, tip+a*SL_ATR_M)
                             if tp<entry and sl>tip:
                                 td=entry-tp; sd=sl-entry
