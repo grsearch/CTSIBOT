@@ -34,13 +34,40 @@ async def main():
     logger.info(f"{'='*50}")
 
     if dry:
-        # 空跑时 patch 下单接口
+        # 空跑时 patch 下单接口：返回"完全成交"，让仓位管理器记录模拟仓位
         from core.exchange import BinanceREST
-        async def _fake(*a,**kw):
-            logging.getLogger("dry").info(f"[DRY] order skipped")
-            return {"orderId":0,"executedQty":"0","fills":[]}
-        BinanceREST.place_limit_order  = _fake
-        BinanceREST.place_market_order = _fake
+        import time as _time
+
+        _order_id = [0]
+        async def _fake_limit(self_ex, symbol, side, quantity, price, time_in_force="GTC"):
+            _order_id[0] += 1
+            qty = quantity
+            logging.getLogger("dry").info(
+                f"[DRY] {side} {symbol} qty={qty:.4f} @ {price:.8f}")
+            return {
+                "orderId": _order_id[0],
+                "executedQty": str(qty),
+                "fills": [{"price": str(price), "qty": str(qty)}],
+                "status": "FILLED",
+            }
+        async def _fake_market(self_ex, symbol, side, quantity):
+            _order_id[0] += 1
+            qty = quantity
+            logging.getLogger("dry").info(
+                f"[DRY] MARKET {side} {symbol} qty={qty:.4f}")
+            return {
+                "orderId": _order_id[0],
+                "executedQty": str(qty),
+                "fills": [{"price": "0", "qty": str(qty)}],
+                "status": "FILLED",
+            }
+        async def _fake_balance(self_ex, asset):
+            if asset == "USDT": return 1000.0
+            return 0.0
+
+        BinanceREST.place_limit_order  = _fake_limit
+        BinanceREST.place_market_order = _fake_market
+        BinanceREST.get_asset_balance  = _fake_balance
 
     from web.dashboard import run_web
     from bot import run as run_bot

@@ -156,7 +156,8 @@ class PositionManager:
             )
             filled_qty = float(order.get("executedQty", 0))
             fills = order.get("fills", [])
-            filled_price = float(fills[0]["price"]) if fills else entry
+            raw_price = float(fills[0]["price"]) if fills else 0.0
+            filled_price = raw_price if raw_price > 0 else entry
 
             if filled_qty < min_qty:
                 logger.warning(f"{sym}: IOC not filled")

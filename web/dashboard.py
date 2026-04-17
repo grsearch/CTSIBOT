@@ -114,6 +114,8 @@ _HTML_HEAD = """<!DOCTYPE html>
   <h1>SPIKE BOT</h1>
   <span class="mbadge dry" id="modeBadge">空跑</span>
   <span class="htm" id="hTime"></span>
+  <button id="modeBtn" onclick="toggleMode()"
+    style="padding:2px 10px;font-size:10px;border-radius:5px;margin-left:4px">切换实盘</button>
   <div class="hdr">
     <div class="hstat"><span class="lb">监控币种</span><span class="vl am" id="hSymN">0</span></div>
     <div class="hdiv"></div>
@@ -409,6 +411,12 @@ function renderHeader(d){
   var mb=document.getElementById('modeBadge');
   mb.textContent=dry?'空跑 DRY-RUN':'实盘 LIVE';
   mb.className='mbadge '+(dry?'dry':'live');
+  var modeBtn=document.getElementById('modeBtn');
+  if(modeBtn){
+    modeBtn.textContent=dry?'切换实盘':'切换空跑';
+    modeBtn.style.borderColor=dry?'var(--gr)':'var(--am)';
+    modeBtn.style.color=dry?'var(--gr)':'var(--am)';
+  }
   document.getElementById('hSymN').textContent=(d.symbols_active||[]).length;
   var dp=d.risk?d.risk.daily_pnl||0:0;
   var tp=d.stats?d.stats.total_pnl||0:0;
@@ -749,6 +757,13 @@ function forceRescan(){
 
 function resetCircuit(){
   post('/api/reset_circuit',{}).then(function(d){ console.log('reset',d); });
+}
+
+function toggleMode(){
+  var dry = !_D.dry_run;
+  post('/api/set_mode', {dry_run: dry}).then(function(d){
+    if(!d.ok) alert('切换失败: '+(d.error||''));
+  });
 }
 
 function post(url,body){
@@ -1115,6 +1130,43 @@ def _sim(sig, future):
     return (ep - sig.entry_price) if sig.direction == "BUY" else (sig.entry_price - ep)
 
 
+async def handle_set_mode(req):
+    try:
+        body = await req.json()
+        dry  = bool(body.get("dry_run", False))
+        cfg_module.DRY_RUN = dry
+        STATE["dry_run"]   = dry
+        # Re-patch or un-patch exchange methods based on new mode
+        from core.exchange import BinanceREST
+        if dry:
+            _oid = [9000]
+            async def _fl(self_ex, symbol, side, quantity, price, time_in_force="GTC"):
+                _oid[0]+=1
+                return {"orderId":_oid[0],"executedQty":str(quantity),
+                        "fills":[{"price":str(price),"qty":str(quantity)}],"status":"FILLED"}
+            async def _fm(self_ex, symbol, side, quantity):
+                _oid[0]+=1
+                return {"orderId":_oid[0],"executedQty":str(quantity),
+                        "fills":[{"price":"0","qty":str(quantity)}],"status":"FILLED"}
+            async def _fb(self_ex, asset):
+                return 1000.0 if asset == "USDT" else 0.0
+            BinanceREST.place_limit_order  = _fl
+            BinanceREST.place_market_order = _fm
+            BinanceREST.get_asset_balance  = _fb
+        else:
+            # Restore real methods
+            import importlib, core.exchange as ex_mod
+            importlib.reload(ex_mod)
+            # Re-bind methods from fresh module
+            BinanceREST.place_limit_order  = ex_mod.BinanceREST.place_limit_order
+            BinanceREST.place_market_order = ex_mod.BinanceREST.place_market_order
+            BinanceREST.get_asset_balance  = ex_mod.BinanceREST.get_asset_balance
+        logger.info(f"模式切换: {'DRY-RUN' if dry else 'LIVE'}")
+        return web.json_response({"ok": True, "dry_run": dry})
+    except Exception as e:
+        return web.json_response({"ok": False, "error": str(e)})
+
+
 async def run_web():
     app = web.Application()
     app.router.add_get("/",                    handle_index)
@@ -1123,6 +1175,7 @@ async def run_web():
     app.router.add_post("/api/reset_circuit",  handle_reset_circuit)
     app.router.add_post("/api/force_rescan",   handle_force_rescan)
     app.router.add_post("/api/grid_search",    handle_grid_search)
+    app.router.add_post("/api/set_mode",       handle_set_mode)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, cfg_module.WEB_HOST, cfg_module.WEB_PORT)

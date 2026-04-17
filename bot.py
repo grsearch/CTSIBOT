@@ -132,7 +132,12 @@ class SymbolWorker:
             )
             can_trade, reason = self.rm.can_trade()
             if STATE["dry_run"]:
-                logger.info(f"[DRY-RUN] 信号: {self.symbol} {signal.direction} score={signal.score}")
+                # 空跑模式：模拟完整交易流程（不实际下单，但记录持仓和盈亏）
+                if can_trade:
+                    await self.pm.try_open(signal, self.symbol)  # 下单接口已被patch为假单
+                else:
+                    STATE["signals_blocked"] += 1
+                    logger.info(f"[DRY] {self.symbol} 风控拦截: {reason}")
             elif can_trade:
                 await self.pm.try_open(signal, self.symbol)
             else:
