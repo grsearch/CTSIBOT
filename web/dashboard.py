@@ -182,9 +182,6 @@ _TAB_PARAMS = """
 <div class="panel" id="p1">
   <div class="card"><div class="ch">插针检测</div>
     <div class="fr">
-      <div class="field"><label>SPIKE_RATIO 针/实体倍数</label>
-        <input type="number" id="p_SPIKE_RATIO" step="0.5" min="1">
-        <span class="hint">下影线 ÷ 实体 ≥ 此值（真插针）</span></div>
       <div class="field"><label>SPIKE_VS_ATR 针/ATR倍数</label>
         <input type="number" id="p_SPIKE_VS_ATR" step="0.5" min="0.5">
         <span class="hint">下影线 ÷ ATR(20) ≥ 此值</span></div>
@@ -252,10 +249,8 @@ _TAB_GRID = """
       <span style="font-weight:400;font-size:10px;color:var(--mt);margin-left:4px">— 对所有监控币种并行回测</span>
     </div>
     <div class="fr">
-      <div class="field"><label>SPIKE_RATIO</label>
-        <input type="text" id="g_sr" value="2.0,2.5,3.0"><span class="hint">逗号分隔</span></div>
-      <div class="field"><label>SPIKE_VS_ATR</label>
-        <input type="text" id="g_atr" value="1.0,1.5,2.0"></div>
+      <div class="field"><label>SPIKE_VS_ATR 针/ATR倍数</label>
+        <input type="text" id="g_atr" value="1.0,1.5,2.0,2.5"><span class="hint">针长 ÷ ATR(20)</span></div>
       <div class="field"><label>MIN_RECOVERY 最小回归%</label>
         <input type="text" id="g_min_rec" value="0.10,0.15,0.20">
         <span class="hint">15%=确认反转，越低入场越早R:R越好</span></div>
@@ -304,7 +299,7 @@ _TAB_GRID = """
     </div>
     <div style="overflow-x:auto">
     <table><thead><tr>
-      <th>#</th><th>SR</th><th>ATR</th><th>MinRec</th><th>MaxRec</th><th>TP</th><th>SL</th><th>SL-ATR</th><th>HOLD</th>
+      <th>#</th><th>ATR</th><th>MinRec</th><th>MaxRec</th><th>TP</th><th>SL</th><th>SL-ATR</th><th>HOLD</th>
       <th>笔数</th><th>胜率</th><th>期望值</th><th>R:R</th><th>PnL</th><th>覆盖币</th><th></th>
     </tr></thead><tbody id="gAggTb"></tbody></table></div>
   </div>
@@ -492,14 +487,14 @@ function renderMonitor(d){
 var _pEditing=false,_pTimer=null;
 function _lockP(){_pEditing=true;clearTimeout(_pTimer);_pTimer=setTimeout(function(){_pEditing=false;},10000);}
 (function(){
-  var ids=['p_SPIKE_RATIO','p_SPIKE_VS_ATR','p_MIN_SPIKE_PIPS','p_MIN_RECOVERY','p_MAX_RECOVERY',
+  var ids=['p_SPIKE_VS_ATR','p_MIN_SPIKE_PIPS','p_MIN_RECOVERY','p_MAX_RECOVERY',
     'p_TP_RATIO','p_SL_RATIO','p_SL_ATR_MULT','p_MIN_RR','p_MAX_HOLD_SECONDS','p_ORDER_USDT',
     'p_DAILY_LOSS_LIMIT_USDT','p_MAX_DRAWDOWN_PCT','p_MAX_CONSECUTIVE_LOSSES','p_MAX_OPEN_ORDERS'];
   ids.forEach(function(id){var el=document.getElementById(id);if(el)el.addEventListener('focus',_lockP);});
 })();
 function syncParams(cfg){
   if(_pEditing)return;
-  var keys=['SPIKE_RATIO','SPIKE_VS_ATR','MIN_SPIKE_PIPS','MIN_RECOVERY','MAX_RECOVERY',
+  var keys=['SPIKE_VS_ATR','MIN_SPIKE_PIPS','MIN_RECOVERY','MAX_RECOVERY',
     'TP_RATIO','SL_RATIO','SL_ATR_MULT','MIN_RR','MAX_HOLD_SECONDS','ORDER_USDT',
     'DAILY_LOSS_LIMIT_USDT','MAX_DRAWDOWN_PCT','MAX_CONSECUTIVE_LOSSES','MAX_OPEN_ORDERS'];
   keys.forEach(function(k){var el=document.getElementById('p_'+k);if(el&&document.activeElement!==el)el.value=cfg[k]!=null?cfg[k]:'';});
@@ -507,7 +502,7 @@ function syncParams(cfg){
 }
 function loadParams(){if(_D.live_config)syncParams(_D.live_config);}
 function applyParams(){
-  var keys=['SPIKE_RATIO','SPIKE_VS_ATR','MIN_SPIKE_PIPS','MIN_RECOVERY','MAX_RECOVERY',
+  var keys=['SPIKE_VS_ATR','MIN_SPIKE_PIPS','MIN_RECOVERY','MAX_RECOVERY',
     'TP_RATIO','SL_RATIO','SL_ATR_MULT','MIN_RR','MAX_HOLD_SECONDS','ORDER_USDT',
     'DAILY_LOSS_LIMIT_USDT','MAX_DRAWDOWN_PCT','MAX_CONSECUTIVE_LOSSES','MAX_OPEN_ORDERS'];
   var u={};
@@ -523,20 +518,19 @@ function applyParams(){
 // ── 网格搜索 ─────────────────────────────────────────────
 function calcCombos(){
   var n=1;
-  ['g_sr','g_atr','g_min_rec','g_max_rec','g_tp','g_sl','g_sl_atr','g_hold'].forEach(function(id){
+  ['g_atr','g_min_rec','g_max_rec','g_tp','g_sl','g_sl_atr','g_hold'].forEach(function(id){
     n*=document.getElementById(id).value.split(',').filter(function(x){return x.trim();}).length||1;
   });
   document.getElementById('gCombo').textContent='共 '+n+' 种组合';
 }
 (function(){
-  ['g_sr','g_atr','g_min_rec','g_max_rec','g_tp','g_sl','g_sl_atr','g_hold'].forEach(function(id){
+  ['g_atr','g_min_rec','g_max_rec','g_tp','g_sl','g_sl_atr','g_hold'].forEach(function(id){
     var el=document.getElementById(id);if(el)el.addEventListener('input',calcCombos);
   });
   calcCombos();
 })();
 function startGrid(){
   var p={
-    spike_ratio:document.getElementById('g_sr').value.split(',').map(Number).filter(Boolean),
     spike_atr:  document.getElementById('g_atr').value.split(',').map(Number).filter(Boolean),
     min_rec:    document.getElementById('g_min_rec').value.split(',').map(Number).filter(Boolean),
     max_rec:    document.getElementById('g_max_rec').value.split(',').map(Number).filter(Boolean),
@@ -569,7 +563,7 @@ function renderGrid(d){
     document.getElementById('gAggTb').innerHTML=d.grid_results.slice(0,10).map(function(r,i){
       var b=i===0;
       return '<tr class="'+(b?'rbest':'')+'"><td class="'+(b?'gr':'')+'">'+(i+1)+'</td>'
-        +'<td>'+r.p.SPIKE_RATIO+'</td><td>'+r.p.SPIKE_VS_ATR+'</td>'
+        +'<td>'+r.p.SPIKE_VS_ATR+'</td>'
         +'<td>'+r.p.MIN_RECOVERY+'</td><td>'+r.p.MAX_RECOVERY+'</td>'
         +'<td>'+r.p.TP_RATIO+'</td><td>'+r.p.SL_RATIO+'</td><td>'+r.p.SL_ATR_MULT+'</td>'
         +'<td>'+r.p.MAX_HOLD_SECONDS+'</td>'
@@ -589,7 +583,7 @@ function renderGrid(d){
       if(!results||!results.length)return;
       var rows=results.slice(0,5).map(function(r,i){
         return '<tr class="'+(i===0?'rbest':'')+'"><td class="'+(i===0?'gr':'')+'">'+(i+1)+'</td>'
-          +'<td>'+r.p.SPIKE_RATIO+'</td><td>'+r.p.SPIKE_VS_ATR+'</td>'
+          +'<td>'+r.p.SPIKE_VS_ATR+'</td>'
           +'<td>'+r.p.MIN_RECOVERY+'</td><td>'+r.p.MAX_RECOVERY+'</td>'
           +'<td>'+r.p.TP_RATIO+'</td><td>'+r.p.SL_RATIO+'</td><td>'+r.p.SL_ATR_MULT+'</td>'
           +'<td>'+r.p.MAX_HOLD_SECONDS+'</td>'
@@ -602,7 +596,7 @@ function renderGrid(d){
       html+='<div class="card" style="margin-top:0"><div class="ch"><span class="am">'+sym+'</span>'
         +'<span style="font-weight:400;color:var(--mt);font-size:10px;margin-left:6px">Top 5</span></div>'
         +'<div style="overflow-x:auto"><table><thead><tr>'
-        +'<th>#</th><th>SR</th><th>ATR</th><th>MinRec</th><th>MaxRec</th><th>TP</th><th>SL</th><th>SL-ATR</th><th>HOLD</th>'
+        +'<th>#</th><th>ATR</th><th>MinRec</th><th>MaxRec</th><th>TP</th><th>SL</th><th>SL-ATR</th><th>HOLD</th>'
         +'<th>N</th><th>胜率</th><th>期望值</th><th>PnL</th><th></th>'
         +'</tr></thead><tbody>'+rows+'</tbody></table></div></div>';
     });
@@ -891,32 +885,32 @@ async def _run_grid_search(params:dict):
             await asyncio.sleep(0)
             sym_combo=[]
             for idx,combo in enumerate(combos):
-                SR,SATR,MIN_REC,MAX_REC,TP_R,SL_R,SL_ATR_M,HOLD=combo
+                SATR,MIN_REC,MAX_REC,TP_R,SL_R,SL_ATR_M,HOLD=combo
                 trades=[]; MIN_RR=getattr(cfg_module,"MIN_RR",1.5)
                 for i in range(ATR_P+1,N):
                     a=atr[i];
                     if a==0: continue
                     mn=closes[i]*MP if MP<0.01 else MP
-                    lower=lw[i]
-                    if lower>=mn and lower/bodies[i]>=SR and lower/a>=SATR:
-                        tip=lows[i]; entry=closes[i]; rec=(entry-tip)/lower
+                    spike_drop=opens[i]-lows[i]
+                    if spike_drop > a*SATR:
+                        rec=(closes[i]-lows[i])/spike_drop
                         if MIN_REC<=rec<=MAX_REC:
-                            root=min(opens[i],closes[i])
+                            tip=lows[i]; entry=closes[i]; root=opens[i]
                             tp=(entry+(root-entry)*TP_R if root>entry else entry+a*TP_R*0.3)
-                            sl=min(tip-lower*SL_R, tip-a*SL_ATR_M)
+                            sl=min(tip-spike_drop*SL_R, tip-a*SL_ATR_M)
                             if tp>entry and sl<tip:
                                 td=tp-entry; sd=entry-sl
                                 if sd>0 and td/sd>=MIN_RR:
                                     future=klines[i+1:i+1+int(HOLD)]
                                     pnl=_sim_fast("BUY",entry,tp,sl,future)
                                     trades.append(pnl); combo_trades[idx].append(pnl)
-                    upper=uw[i]
-                    if upper>=mn and upper/bodies[i]>=SR and upper/a>=SATR:
-                        tip=highs[i]; entry=closes[i]; rec=(tip-entry)/upper
+                    spike_rise=highs[i]-opens[i]
+                    if spike_rise > a*SATR:
+                        rec=(highs[i]-closes[i])/spike_rise
                         if MIN_REC<=rec<=MAX_REC:
-                            root=max(opens[i],closes[i])
+                            tip=highs[i]; entry=closes[i]; root=opens[i]
                             tp=(entry-(entry-root)*TP_R if root<entry else entry-a*TP_R*0.3)
-                            sl=max(tip+upper*SL_R, tip+a*SL_ATR_M)
+                            sl=max(tip+spike_rise*SL_R, tip+a*SL_ATR_M)
                             if tp<entry and sl>tip:
                                 td=entry-tp; sd=sl-entry
                                 if sd>0 and td/sd>=MIN_RR:
