@@ -124,12 +124,13 @@ class SpikeDetector:
                 if recovery >= self.cfg.RECOVERY_RATIO:
                     entry = candle.close
 
-                    # TP: 目标是回到 spike_root 再往上一点
-                    # 确保 tp > entry（否则交易没有意义）
-                    tp = spike_root + atr * 0.1
-                    if tp <= entry:
-                        # 兜底：entry 上方 wick*15% 处
-                        tp = entry + lower * 0.15
+                    # TP: entry 到 spike_root 方向走 TP_RATIO 比例
+                    # 确保 tp > entry
+                    if spike_root > entry:
+                        tp = entry + (spike_root - entry) * self.cfg.TP_RATIO
+                    else:
+                        # over-recovery: close 超过了 root，用 ATR 兜底
+                        tp = entry + atr * self.cfg.TP_RATIO * 0.5
 
                     # SL: 针尖下方
                     sl = spike_tip - lower * self.cfg.SL_RATIO
@@ -182,11 +183,11 @@ class SpikeDetector:
                 if recovery >= self.cfg.RECOVERY_RATIO:
                     entry = candle.close
 
-                    # TP: 目标是回到 spike_root 再往下一点
-                    # 确保 tp < entry
-                    tp = spike_root - atr * 0.1
-                    if tp >= entry:
-                        tp = entry - upper * 0.15
+                    # TP: entry 到 spike_root 方向走 TP_RATIO 比例
+                    if spike_root < entry:
+                        tp = entry - (entry - spike_root) * self.cfg.TP_RATIO
+                    else:
+                        tp = entry - atr * self.cfg.TP_RATIO * 0.5
 
                     # SL: 针尖上方
                     sl = spike_tip + upper * self.cfg.SL_RATIO

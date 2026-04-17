@@ -259,9 +259,8 @@ _TAB_GRID = """
       <div class="field"><label>RECOVERY_RATIO</label>
         <input type="text" id="g_rec" value="0.30,0.40,0.50"></div>
       <div class="field"><label>TP_RATIO</label>
-        <input type="text" id="g_tp" value="0.65" readonly
-          style="opacity:.5;cursor:not-allowed" title="TP 现在基于 ATR 自动计算，无需搜索">
-        <span class="hint" style="color:var(--am)">已固定为 ATR 自适应，无需搜索</span></div>
+        <input type="text" id="g_tp" value="0.5,0.7,1.0">
+        <span class="hint">从 entry 到 spike_root 的比例，1.0=完全回归针根</span></div>
       <div class="field"><label>SL_RATIO</label>
         <input type="text" id="g_sl" value="0.08,0.12,0.18"></div>
       <div class="field"><label>MAX_HOLD_SECONDS</label>
@@ -299,7 +298,7 @@ _TAB_GRID = """
     </div>
     <div style="overflow-x:auto">
     <table><thead><tr>
-      <th>#</th><th>SR</th><th>ATR</th><th>REC</th><th>TP</th><th>SL</th><th>HOLD</th>
+      <th>#</th><th>SR</th><th>ATR倍</th><th>REC</th><th>TP</th><th>SL</th><th>HOLD</th>
       <th>笔数</th><th>胜率</th><th>期望值</th><th>Sharpe</th><th>PnL</th><th>覆盖币</th><th></th>
     </tr></thead><tbody id="gAggTb"></tbody></table></div>
   </div>
@@ -548,7 +547,7 @@ function startGrid(){
     spike_ratio: document.getElementById('g_sr').value.split(',').map(Number).filter(Boolean),
     spike_atr:   document.getElementById('g_atr').value.split(',').map(Number).filter(Boolean),
     recovery:    document.getElementById('g_rec').value.split(',').map(Number).filter(Boolean),
-    tp:          [0.65],  // TP 基于 ATR 自动计算，此值仅占位
+    tp:          document.getElementById('g_tp').value.split(',').map(Number).filter(Boolean),
     sl:          document.getElementById('g_sl').value.split(',').map(Number).filter(Boolean),
     hold:        document.getElementById('g_hold').value.split(',').map(Number).filter(Boolean),
     days:        parseInt(document.getElementById('g_days').value)||2,
@@ -610,7 +609,7 @@ function renderGrid(d){
       html+='<div class="card" style="margin-top:0"><div class="ch"><span class="am">'+sym+'</span>'
         +'<span style="font-weight:400;color:var(--mt);font-size:10px;margin-left:6px">Top 5</span></div>'
         +'<div style="overflow-x:auto"><table><thead><tr>'
-        +'<th>#</th><th>SR</th><th>ATR</th><th>REC</th><th>TP</th><th>SL</th><th>HOLD</th>'
+        +'<th>#</th><th>SR</th><th>ATR倍</th><th>REC</th><th>TP</th><th>SL</th><th>HOLD</th>'
         +'<th>N</th><th>胜率</th><th>期望值</th><th>Sharpe</th><th>PnL</th><th></th>'
         +'</tr></thead><tbody>'+rows+'</tbody></table></div></div>';
     });
@@ -919,6 +918,7 @@ async def _run_grid_search(params: dict):
             "SPIKE_RATIO":      params.get("spike_ratio", [cfg_module.SPIKE_RATIO]),
             "SPIKE_VS_ATR":     params.get("spike_atr",   [cfg_module.SPIKE_VS_ATR]),
             "RECOVERY_RATIO":   params.get("recovery",    [cfg_module.RECOVERY_RATIO]),
+            "TP_RATIO":         params.get("tp",          [cfg_module.TP_RATIO]),
             "SL_RATIO":         params.get("sl",          [cfg_module.SL_RATIO]),
             "MAX_HOLD_SECONDS": params.get("hold",        [cfg_module.MAX_HOLD_SECONDS]),
         }
@@ -988,7 +988,7 @@ async def _run_grid_search(params: dict):
             # ── 参数组合循环（轻量）──────────────────────────────────
             sym_combo = []
             for idx, combo in enumerate(combos):
-                SR, SATR, REC, SL_R, HOLD = combo
+                SR, SATR, REC, TP_R, SL_R, HOLD = combo
                 trades = []
 
                 for i in range(ATR_P + 1, N):
@@ -1006,9 +1006,14 @@ async def _run_grid_search(params: dict):
                         rec  = (entry - tip) / lw
                         if rec >= REC:
                             root = min(opens[i], closes[i])
-                            tp   = root + a * 0.1
-                            if tp <= entry:
-                                tp = entry + lw * 0.15
+                            # tp = entry + (root - entry) * TP_RATIO
+                            # 从 entry 出发，向 spike_root 方向走 TP_RATIO 比例
+                            # 确保 tp > entry（root >= entry 时自然满足）
+                            if root > entry:
+                                tp = entry + (root - entry) * TP_R
+                            else:
+                                # root <= entry（over-recovery），用 ATR 兜底
+                                tp = entry + a * TP_R * 0.5
                             sl   = tip - lw * SL_R
                             if tp > entry > tip >= sl:
                                 future = klines[i+1 : i+1+int(HOLD)]
@@ -1023,9 +1028,10 @@ async def _run_grid_search(params: dict):
                         rec  = (tip - entry) / uw
                         if rec >= REC:
                             root = max(opens[i], closes[i])
-                            tp   = root - a * 0.1
-                            if tp >= entry:
-                                tp = entry - uw * 0.15
+                            if root < entry:
+                                tp = entry - (entry - root) * TP_R
+                            else:
+                                tp = entry - a * TP_R * 0.5
                             sl   = tip + uw * SL_R
                             if sl >= tip >= entry >= tp:
                                 future = klines[i+1 : i+1+int(HOLD)]
@@ -1055,7 +1061,7 @@ async def _run_grid_search(params: dict):
             m = _calc_metrics(t)
             m["symbols_covered"] = sum(
                 1 for sr in sym_results_all.values()
-                if any(r["p"] == dict(zip(keys, combo)) for r in sr))
+                if any(all(r["p"].get(k)==v for k,v in zip(keys,combo)) for r in sr))
             agg.append({"score": m.get(target, 0),
                         "p": dict(zip(keys, combo)), "m": m})
         agg.sort(key=lambda x: x["score"], reverse=True)
