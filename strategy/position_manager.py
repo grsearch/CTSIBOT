@@ -1,8 +1,7 @@
 """
 仓位管理器 - 多币种版本
-每个 symbol 独立精度缓存，统一记录所有仓位
+市价单入场，精确用TP/SL价平仓
 """
-import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -18,7 +17,7 @@ logger = logging.getLogger(__name__)
 class Position:
     id: int
     symbol: str
-    direction: str
+    direction: str       # BUY | SELL
     entry_price: float
     quantity: float
     take_profit: float
@@ -27,9 +26,10 @@ class Position:
     order_id: Optional[int] = None
     status: str = "OPEN"
     close_price: float = 0.0
-    close_reason: str = ""
+    close_reason: str = ""  # TP | SL | TIMEOUT
     pnl_usdt: float = 0.0
     signal_score: float = 0.0
+    rr_ratio: float = 0.0
 
     @property
     def age_seconds(self) -> float:
@@ -44,22 +44,18 @@ class Position:
 
 class PositionManager:
     def __init__(self, exchange: BinanceREST, config):
-        self.ex   = exchange
-        self.cfg  = config
+        self.ex  = exchange
+        self.cfg = config
         self._positions: list[Position] = []
         self._pos_counter = 0
         self._total_pnl   = 0.0
         self._win_count   = 0
         self._loss_count  = 0
-        # 每个 symbol 的精度信息
         self._filters: Dict[str, dict] = {}
-        # 默认精度（未获取到时使用）
         self._default_filters = {"qty_step": 1.0, "price_step": 0.00001, "min_qty": 1.0}
 
     async def init_filters(self, symbol: str = None):
-        """获取交易对精度，支持指定symbol或读config.SYMBOL"""
-        sym = symbol or self.cfg.SYMBOL
-        await self._fetch_filters(sym)
+        await self._fetch_filters(symbol or self.cfg.SYMBOL)
 
     async def _fetch_filters(self, symbol: str):
         if symbol in self._filters:
@@ -69,15 +65,15 @@ class PositionManager:
             if not info:
                 self._filters[symbol] = self._default_filters.copy()
                 return
-            f_info = {"qty_step": 1.0, "price_step": 0.00001, "min_qty": 1.0}
+            fi = {"qty_step": 1.0, "price_step": 0.00001, "min_qty": 1.0}
             for f in info["filters"]:
                 if f["filterType"] == "LOT_SIZE":
-                    f_info["qty_step"] = float(f["stepSize"])
-                    f_info["min_qty"]  = float(f["minQty"])
+                    fi["qty_step"] = float(f["stepSize"])
+                    fi["min_qty"]  = float(f["minQty"])
                 if f["filterType"] == "PRICE_FILTER":
-                    f_info["price_step"] = float(f["tickSize"])
-            self._filters[symbol] = f_info
-            logger.info(f"{symbol} filters: {f_info}")
+                    fi["price_step"] = float(f["tickSize"])
+            self._filters[symbol] = fi
+            logger.info(f"{symbol} filters: {fi}")
         except Exception as e:
             logger.warning(f"获取{symbol}精度失败: {e}")
             self._filters[symbol] = self._default_filters.copy()
@@ -87,11 +83,9 @@ class PositionManager:
 
     def _round_qty(self, qty: float, symbol: str) -> float:
         step = self._get_filter(symbol)["qty_step"]
+        if step == 0:
+            return qty
         return round(round(qty / step) * step, 8)
-
-    def _round_price(self, price: float, symbol: str) -> float:
-        step = self._get_filter(symbol)["price_step"]
-        return round(round(price / step) * step, 8)
 
     @property
     def open_positions(self) -> list[Position]:
@@ -111,29 +105,23 @@ class PositionManager:
 
     async def try_open(self, signal: SpikeSignal, symbol: str = None) -> Optional[Position]:
         sym = symbol or self.cfg.SYMBOL
-
-        # 确保有该 symbol 的精度
         await self._fetch_filters(sym)
 
         if len(self.open_positions) >= self.cfg.MAX_OPEN_ORDERS:
-            logger.debug("Max open positions reached")
             return None
 
-        # 同 symbol 同方向不重复开
+        # 同币种同方向不重复开
         for p in self.open_positions:
             if p.symbol == sym and p.direction == signal.direction:
-                logger.debug(f"Already have {signal.direction} on {sym}")
                 return None
 
-        if signal.score < 25:  # 降低评分门槛（原40太严）
-            logger.debug(f"Score too low: {signal.score}")
+        if signal.score < 25:
+            logger.debug(f"Score {signal.score} < 25, skip")
             return None
 
         try:
-            usdt_amount = min(
-                self.cfg.ORDER_USDT,
-                await self.ex.get_asset_balance(self.cfg.QUOTE_ASSET) * 0.95
-            )
+            bal = await self.ex.get_asset_balance(self.cfg.QUOTE_ASSET)
+            usdt_amount = min(self.cfg.ORDER_USDT, bal * 0.95)
         except Exception:
             usdt_amount = self.cfg.ORDER_USDT
 
@@ -143,71 +131,93 @@ class PositionManager:
             logger.warning(f"{sym}: qty {qty} < min {min_qty}")
             return None
 
-        entry = self._round_price(signal.entry_price, sym)
-        tp    = self._round_price(signal.take_profit,  sym)
-        sl    = self._round_price(signal.stop_loss,    sym)
-
-        logger.info(f"Opening {sym} {signal.direction} | entry={entry} tp={tp} sl={sl} qty={qty} score={signal.score}")
+        logger.info(
+            f"Opening {sym} {signal.direction} | "
+            f"entry≈{signal.entry_price:.6f} "
+            f"tp={signal.take_profit:.6f} sl={signal.stop_loss:.6f} "
+            f"R:R={signal.rr_ratio} score={signal.score}"
+        )
 
         try:
-            order = await self.ex.place_limit_order(
-                symbol=sym, side=signal.direction,
-                quantity=qty, price=entry, time_in_force="IOC",
+            # 市价单：必然成交，消除IOC不成交问题
+            order = await self.ex.place_market_order(
+                symbol=sym, side=signal.direction, quantity=qty,
             )
             filled_qty = float(order.get("executedQty", 0))
             fills = order.get("fills", [])
-            raw_price = float(fills[0]["price"]) if fills else 0.0
-            filled_price = raw_price if raw_price > 0 else entry
+            if fills:
+                total_cost = sum(float(f["price"]) * float(f["qty"]) for f in fills)
+                total_qty  = sum(float(f["qty"]) for f in fills)
+                filled_price = total_cost / total_qty if total_qty > 0 else signal.entry_price
+            else:
+                filled_price = signal.entry_price
 
             if filled_qty < min_qty:
-                logger.warning(f"{sym}: IOC not filled")
+                logger.warning(f"{sym}: market order not filled")
                 return None
 
             self._pos_counter += 1
             pos = Position(
-                id=self._pos_counter, symbol=sym,
+                id=self._pos_counter,
+                symbol=sym,
                 direction=signal.direction,
-                entry_price=filled_price, quantity=filled_qty,
-                take_profit=tp, stop_loss=sl,
+                entry_price=filled_price,
+                quantity=filled_qty,
+                take_profit=signal.take_profit,
+                stop_loss=signal.stop_loss,
                 open_time=time.time(),
                 order_id=order.get("orderId"),
                 signal_score=signal.score,
+                rr_ratio=signal.rr_ratio,
             )
             self._positions.append(pos)
-            logger.info(f"Position #{pos.id} {sym} opened @ {filled_price}")
+            logger.info(f"Position #{pos.id} {sym} opened @ {filled_price:.6f}")
             return pos
+
         except Exception as e:
-            logger.error(f"Open order failed {sym}: {e}")
+            logger.error(f"Open failed {sym}: {e}")
             return None
 
     async def monitor_positions(self, current_price: float, symbol: str = None):
-        """检查指定 symbol（或所有）持仓的 TP/SL/超时"""
-        for pos in self.open_positions:
+        for pos in list(self.open_positions):
             if symbol and pos.symbol != symbol:
                 continue
-            reason = None
-            price  = current_price
+
+            reason     = None
+            exit_price = current_price
 
             if pos.direction == "BUY":
-                if price >= pos.take_profit:  reason = "TP"
-                elif price <= pos.stop_loss:  reason = "SL"
+                if current_price >= pos.take_profit:
+                    reason     = "TP"
+                    exit_price = pos.take_profit  # 精确用TP价
+                elif current_price <= pos.stop_loss:
+                    reason     = "SL"
+                    exit_price = pos.stop_loss    # 精确用SL价
             else:
-                if price <= pos.take_profit:  reason = "TP"
-                elif price >= pos.stop_loss:  reason = "SL"
+                if current_price <= pos.take_profit:
+                    reason     = "TP"
+                    exit_price = pos.take_profit
+                elif current_price >= pos.stop_loss:
+                    reason     = "SL"
+                    exit_price = pos.stop_loss
 
             if not reason and pos.age_seconds >= self.cfg.MAX_HOLD_SECONDS:
-                reason = "TIMEOUT"
+                reason     = "TIMEOUT"
+                exit_price = current_price  # 超时用当前市价
 
             if reason:
-                await self._close_position(pos, price, reason)
+                await self._close(pos, exit_price, reason)
 
-    async def _close_position(self, pos: Position, exit_price: float, reason: str):
+    async def _close(self, pos: Position, exit_price: float, reason: str):
         close_side = "SELL" if pos.direction == "BUY" else "BUY"
-        logger.info(f"Closing #{pos.id} {pos.symbol} {pos.direction} @ {exit_price} [{reason}] age={pos.age_seconds:.1f}s")
+        logger.info(
+            f"Closing #{pos.id} {pos.symbol} {pos.direction} @ {exit_price:.6f} "
+            f"[{reason}] age={pos.age_seconds:.1f}s"
+        )
         try:
             await self.ex.place_market_order(pos.symbol, close_side, pos.quantity)
         except Exception as e:
-            logger.error(f"Close order failed: {e}")
+            logger.error(f"Close failed: {e}")
 
         pnl = pos.calc_pnl(exit_price)
         pos.status       = "CLOSED"
@@ -215,9 +225,11 @@ class PositionManager:
         pos.close_reason = reason
         pos.pnl_usdt     = round(pnl, 4)
         self._total_pnl += pnl
-        if pnl > 0: self._win_count  += 1
-        else:        self._loss_count += 1
-        logger.info(f"#{pos.id} closed | PnL={pnl:.4f} USDT")
+        if pnl > 0:
+            self._win_count  += 1
+        else:
+            self._loss_count += 1
+        logger.info(f"#{pos.id} closed | PnL={pnl:+.4f} USDT")
 
     def get_recent_trades(self, n: int = 20) -> list[Position]:
         return [p for p in self._positions if p.status == "CLOSED"][-n:]

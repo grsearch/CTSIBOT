@@ -30,7 +30,7 @@ STATE = {
     "risk":             None,
     "errors":           [],
     "diag":             {},
-    # 网格搜索状态
+    # 网格搜索
     "grid_running":     False,
     "grid_progress":    0,
     "grid_total":       0,
@@ -38,7 +38,7 @@ STATE = {
     "grid_best":        None,
     "grid_sym_results": {},
     "grid_log":         [],
-    # 实时参数快照
+    # 参数快照
     "live_config":      {},
 }
 
@@ -48,20 +48,21 @@ BALANCE_UPDATE_INTERVAL = 30
 def _snapshot_config() -> dict:
     keys = [
         "SCAN_MODE", "SYMBOL", "SYMBOL_LIST",
-        "SPIKE_RATIO", "SPIKE_VS_ATR", "ATR_PERIOD", "RECOVERY_RATIO", "MIN_SPIKE_PIPS",
-        "ORDER_USDT", "MAX_OPEN_ORDERS",
-        "TP_RATIO", "SL_RATIO", "MAX_HOLD_SECONDS",
+        "SPIKE_RATIO", "SPIKE_VS_ATR", "ATR_PERIOD", "MIN_SPIKE_PIPS",
+        "MIN_RECOVERY", "MAX_RECOVERY",
+        "TP_RATIO", "SL_RATIO", "SL_ATR_MULT", "MIN_RR",
+        "MAX_HOLD_SECONDS", "ORDER_USDT", "MAX_OPEN_ORDERS",
         "MA_PERIOD", "TREND_FILTER", "POLL_INTERVAL_MS",
         "DAILY_LOSS_LIMIT_USDT", "MAX_DRAWDOWN_PCT",
         "MAX_CONSECUTIVE_LOSSES", "MAX_DAILY_TRADES",
-        "AUTO_MIN_GAIN_PCT", "AUTO_MIN_VOLUME_USDT", "AUTO_MAX_SYMBOLS", "AUTO_REFRESH_SEC",
+        "AUTO_MIN_GAIN_PCT", "AUTO_MIN_VOLUME_USDT",
+        "AUTO_MAX_SYMBOLS", "AUTO_REFRESH_SEC",
         "DRY_RUN",
     ]
     return {k: getattr(cfg_module, k, None) for k in keys}
 
 
 class SymbolWorker:
-    """每个币种一个 worker，独立检测器"""
     def __init__(self, symbol: str, exchange: BinanceREST,
                  pm: PositionManager, rm: RiskManager):
         self.symbol   = symbol
@@ -98,7 +99,7 @@ class SymbolWorker:
             volume=latest["volume"],
         )
 
-        # 诊断数据（用最近处理的币更新）
+        # 诊断数据
         atr   = self.detector._atr_cache
         lower = candle.lower_wick
         upper = candle.upper_wick
@@ -118,7 +119,8 @@ class SymbolWorker:
             "recovery":        (candle.close - candle.low) / lower if lower > 0 else 0,
             "cfg_spike_ratio": cfg_module.SPIKE_RATIO,
             "cfg_spike_atr":   cfg_module.SPIKE_VS_ATR,
-            "cfg_recovery":    cfg_module.RECOVERY_RATIO,
+            "cfg_min_rec":     getattr(cfg_module, 'MIN_RECOVERY', 0.20),
+            "cfg_max_rec":     getattr(cfg_module, 'MAX_RECOVERY', 0.70),
         }
 
         signal = self.detector.detect(candle)
@@ -126,18 +128,16 @@ class SymbolWorker:
             STATE["signals_found"] += 1
             logger.info(
                 f"[{self.symbol}] SPIKE {signal.direction} "
-                f"score={signal.score} tip={signal.spike_tip:.6f} "
-                f"entry={signal.entry_price:.6f} "
+                f"score={signal.score} R:R={signal.rr_ratio} "
+                f"tip={signal.spike_tip:.6f} entry={signal.entry_price:.6f} "
                 f"tp={signal.take_profit:.6f} sl={signal.stop_loss:.6f}"
             )
             can_trade, reason = self.rm.can_trade()
             if STATE["dry_run"]:
-                # 空跑模式：模拟完整交易流程（不实际下单，但记录持仓和盈亏）
                 if can_trade:
-                    await self.pm.try_open(signal, self.symbol)  # 下单接口已被patch为假单
+                    await self.pm.try_open(signal, self.symbol)
                 else:
                     STATE["signals_blocked"] += 1
-                    logger.info(f"[DRY] {self.symbol} 风控拦截: {reason}")
             elif can_trade:
                 await self.pm.try_open(signal, self.symbol)
             else:
@@ -178,13 +178,12 @@ class TradingBot:
         try:
             bal = await self.ex.get_asset_balance(cfg_module.QUOTE_ASSET)
             self.rm.update_balance(bal)
-            logger.info(f"初始余额: {bal:.2f} {cfg_module.QUOTE_ASSET}")
+            logger.info(f"账户余额: {bal:.2f} {cfg_module.QUOTE_ASSET}")
         except Exception as e:
             logger.warning(f"获取余额失败: {e}")
 
         dry = STATE["dry_run"]
-        logger.info(f"模式: {'DRY-RUN 空跑（不下单）' if dry else 'LIVE 实盘'}")
-
+        logger.info(f"模式: {'DRY-RUN 空跑' if dry else 'LIVE 实盘'}")
         self._running    = True
         STATE["running"] = True
 
@@ -229,30 +228,35 @@ class TradingBot:
                 STATE["detectors"].pop(sym, None)
                 STATE["prices"].pop(sym, None)
 
-        batch_size = 5
-        sym_list   = list(self._workers.keys())
-        for i in range(0, len(sym_list), batch_size):
-            batch = sym_list[i:i+batch_size]
-            await asyncio.gather(
+        sym_list = list(self._workers.keys())
+        for i in range(0, len(sym_list), 5):
+            batch = sym_list[i:i+5]
+            results = await asyncio.gather(
                 *[self._workers[s].tick() for s in batch],
                 return_exceptions=True
             )
-            if i + batch_size < len(sym_list):
+            for sym, res in zip(batch, results):
+                if isinstance(res, Exception):
+                    logger.warning(f"[{sym}] tick error: {res}")
+            if i + 5 < len(sym_list):
                 await asyncio.sleep(0.1)
 
     def stop(self):
         self._running    = False
         STATE["running"] = False
-        logger.info("Bot stopped")
 
     def apply_live_config(self, updates: dict):
         allowed = {
-            "SPIKE_RATIO", "SPIKE_VS_ATR", "RECOVERY_RATIO", "MIN_SPIKE_PIPS",
-            "TP_RATIO", "SL_RATIO", "MAX_HOLD_SECONDS",
-            "ORDER_USDT", "MAX_OPEN_ORDERS", "TREND_FILTER",
-            "DAILY_LOSS_LIMIT_USDT", "MAX_DRAWDOWN_PCT", "MAX_CONSECUTIVE_LOSSES",
+            "SPIKE_RATIO", "SPIKE_VS_ATR", "MIN_SPIKE_PIPS",
+            "MIN_RECOVERY", "MAX_RECOVERY",
+            "TP_RATIO", "SL_RATIO", "SL_ATR_MULT", "MIN_RR",
+            "MAX_HOLD_SECONDS", "ORDER_USDT", "MAX_OPEN_ORDERS",
+            "TREND_FILTER", "MA_PERIOD",
+            "DAILY_LOSS_LIMIT_USDT", "MAX_DRAWDOWN_PCT",
+            "MAX_CONSECUTIVE_LOSSES",
             "SCAN_MODE", "SYMBOL", "SYMBOL_LIST",
-            "AUTO_MIN_GAIN_PCT", "AUTO_MIN_VOLUME_USDT", "AUTO_MAX_SYMBOLS", "AUTO_REFRESH_SEC",
+            "AUTO_MIN_GAIN_PCT", "AUTO_MIN_VOLUME_USDT",
+            "AUTO_MAX_SYMBOLS", "AUTO_REFRESH_SEC",
         }
         changed = []
         for k, v in updates.items():
@@ -260,7 +264,7 @@ class TradingBot:
                 setattr(cfg_module, k, v)
                 changed.append(f"{k}={v}")
         if changed:
-            logger.info(f"参数热更新: {', '.join(changed)}")
+            logger.info(f"热更新: {', '.join(changed)}")
             STATE["live_config"] = _snapshot_config()
             STATE["scan_mode"]   = getattr(cfg_module, "SCAN_MODE", "single")
             for sym, worker in self._workers.items():
@@ -269,7 +273,6 @@ class TradingBot:
         return changed
 
 
-# 全局实例供 dashboard 调用
 _bot_instance: TradingBot = None
 
 
